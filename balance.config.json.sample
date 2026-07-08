@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Two-level rule config for balance.py. 'cluster' sets defaults for all",
+    "databases; each entry under 'databases' (keyed by DB uid as a string, or by DB",
+    "name) OVERRIDES the cluster defaults for that database.",
+    "shard_migration_check_timeout / endpoint_migration_check_timeout are CLUSTER-ONLY",
+    "(seconds; default 30): the hard wall-clock budget, during 'execute', to wait for",
+    "the cluster status to return to OK after each shard/failover or endpoint op. Put",
+    "them under 'databases' and they are ignored with a warning.",
+    "ALWAYS ON, not configurable: master/replica anti-affinity; rack-awareness when",
+    "the cluster has it enabled. Setting those false here is ignored with a warning."
+  ],
+
+  "cluster": {
+    "shard_cpu": 1.0,
+    "endpoint_cpu": 1.5,
+
+    "respect_shard_placement": true,
+    "consolidate_dense": true,
+    "respect_endpoint_policy": true,
+
+    "exclude_from_balancing": false,
+
+    "shard_migration_check_timeout": 30,
+    "endpoint_migration_check_timeout": 30
+  },
+
+  "databases": {
+    "4": {
+      "shard_cpu": 0.5,
+      "endpoint_cpu": 0.66,
+      "respect_shard_placement": false
+    },
+    "conductor-clm": {
+      "exclude_from_balancing": true
+    }
+  }
+}
