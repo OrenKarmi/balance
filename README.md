@@ -34,6 +34,8 @@ database's endpoint co-located with its master shard(s).
 
 ```bash
 python balance.py                       # plan (read-only), default
+python balance.py plan --verbose        # full report (Steps 1-3 + node-removal analysis)
+python balance.py plan --force          # plan even if the cluster lacks RAM/CPU (over-commit)
 python balance.py plan --format html > report.html
 python balance.py plan --format json
 python balance.py execute                # plan, then migrate after approval
@@ -52,6 +54,24 @@ python balance.py plan --config ./balance.config.json   # copy balance.config.js
 `plan` is read-only (current layout → desired layout → rebalancing plan).
 `execute` performs the migrations **after explicit approval**, verifying cluster
 health between operations.
+
+## Options
+
+- `--verbose` — print the **full report** instead of the concise default. It adds
+  Step 1 (current layout + score), Step 2 (desired layout + score), Step 3 (the
+  ordered plan), and a **node-removal / failure-tolerance** analysis, and shows
+  **every** database's shard and endpoint placement per node. Without it, the text
+  output is concise: just the cluster map (databases the plan changes) and the
+  Step-4 commands.
+- `--force` — **resource override**: still produce a balancing plan when the cluster
+  lacks RAM/CPU. The plan may **over-commit** nodes and is flagged **NOT deployable**
+  (execution is refused). Policy constraints — master/replica anti-affinity,
+  rack-awareness, dense/sparse placement and shard limits — are **still enforced**.
+  When `--force` finds nothing to change, it prints the current cluster-topology map
+  so you can review the layout.
+
+Both are read-only and can be combined (e.g. `plan --force --verbose`), and they
+work with any input source (`--status-file`, `--rest`, or live `rladmin`).
 
 ## Configuration
 
