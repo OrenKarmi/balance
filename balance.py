@@ -2277,6 +2277,10 @@ def _blue(s: Any) -> str:
     return _c(s, "34")
 
 
+def _purple(s: Any) -> str:
+    return _c(s, "35")
+
+
 def _vlen(s: Any) -> int:
     return len(_ANSI_RE.sub("", str(s)))
 
@@ -2290,6 +2294,12 @@ def _pct(frac: float) -> str:
     """Format a utilisation fraction as 'NN%', red when over 100% (over capacity)."""
     s = f"{frac * 100:.0f}%"
     return _red(s) if frac > 1.0 + 1e-9 else s
+
+
+def _free_vcpu(v: float) -> str:
+    """Spare vCPU as ':g'; red when negative (node over-subscribed - same red as >100%)."""
+    s = f"{v:g}"
+    return _red(s) if v < -1e-9 else s
 
 
 def _pct3(frac: float) -> str:
@@ -2322,7 +2332,7 @@ def _ansi_to_html(text: str) -> str:
     """Convert a colour-coded text report into HTML: escape text, map our ANSI
     colours (31 red, 32 green, 34 blue) to spans. Reuses all existing rendering."""
     parts = re.split(r"(\x1b\[[0-9;]*m)", text)
-    cls = {"31": "r", "32": "g", "34": "b"}
+    cls = {"31": "r", "32": "g", "34": "b", "35": "p"}
     out = []
     for part in parts:
         m = re.fullmatch(r"\x1b\[([0-9;]*)m", part)
@@ -2345,6 +2355,7 @@ def _html_report(cluster_name: str, text_report: str) -> str:
         "pre{font-family:Consolas,Menlo,monospace;font-size:13px;line-height:1.35;"
         "white-space:pre;overflow-x:auto;}"
         ".r{color:#c0392b;font-weight:bold}.g{color:#1e8449}.b{color:#1f4e9c}"
+        ".p{color:#8e44ad;font-weight:bold}"
         "</style></head><body>"
         f"<h2>Redis Enterprise rebalancing report &mdash; {_htmlmod.escape(cluster_name)}</h2>"
         f"<pre>{body}</pre></body></html>"
@@ -2402,7 +2413,7 @@ def render_current_layout(
     for v in sorted(views, key=lambda x: x.uid):
         node_rows.append([
             v.uid, v.addr, v.status, v.cores,
-            f"{v.required_vcpu:g}", f"{v.free_vcpu:g}",
+            f"{v.required_vcpu:g}", _free_vcpu(v.free_vcpu),
             fmt_bytes(v.total_memory), fmt_bytes(v.provisioned_memory),
             fmt_bytes(v.available_ram), f"{v.master_shards}/{v.replica_shards}",
             v.endpoints, v.rack_id or "-",
@@ -2908,7 +2919,8 @@ def render_cluster_map(cluster: Cluster, caps: Dict[int, NodeCapacity],
     cur/new/chg). Split. BOTTOM: per database an EP row and a shards row, with a
     blank line between databases. Migrations appear as +arriving / -leaving on
     the shard/EP cells. Colours: over-100% red; chg-down & '-' green; chg-up &
-    '+' blue. All sections share node columns, so everything lines up."""
+    '+' blue; failovers (role flip in place, 'Rn>Mn') purple. All sections share
+    node columns, so everything lines up."""
     data = _node_plan_data(cluster, caps, cur, planned)
     nodes = [d["node"] for d in data]
     u = {d["node"]: d for d in data}
@@ -2992,7 +3004,7 @@ def render_cluster_map(cluster: Cluster, caps: Dict[int, NodeCapacity],
             if cn == pn and cr == pr:                       # unchanged
                 entries.append({cn: f"{cr}{shard.uid}"})
             elif cn == pn:                                  # role flip in place (failover)
-                entries.append({cn: f"{cr}{shard.uid}>{pr}{shard.uid}"})
+                entries.append({cn: _purple(f"{cr}{shard.uid}>{pr}{shard.uid}")})
             else:                                           # migrated (slave / non-repl master)
                 entries.append({cn: f"-{cr}{shard.uid}", pn: f"+{pr}{shard.uid}"})
         packed: List[Dict[int, str]] = []
