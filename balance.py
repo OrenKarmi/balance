@@ -1744,7 +1744,15 @@ def optimize(cluster: Cluster, caps: Dict[int, NodeCapacity], max_iter: int = 50
         # only considered below, when no such move improves the balance further.
         if best is not None:
             (viol, obj, _risk), kind, payload = best
-            if obj < base - eps or viol < base_viol:
+            # Accept only on a STRICT lexicographic improvement in (violations, objective)
+            # - the same ordering consider() ranks by. Accepting when EITHER axis improved
+            # (obj OR viol) let the search ping-pong between two states that each dominate
+            # the other on a different axis (fewer violations vs. better balance), churning
+            # out reversing moves until max_iter. Lexicographic acceptance makes the
+            # potential monotonically decreasing, so it converges and never reverses.
+            # (Non-force behaviour is unchanged: there, viol > base_viol candidates are
+            # already filtered, so this reduces to the previous obj-improvement test.)
+            if viol < base_viol or (viol == base_viol and obj < base - eps):
                 if kind == "ep":
                     db, src, dst = payload
                     state.do_ep_move(db, src, dst)
@@ -1824,36 +1832,84 @@ def optimize(cluster: Cluster, caps: Dict[int, NodeCapacity], max_iter: int = 50
 
 
 def compact_plan(cluster: Cluster, caps: Dict[int, NodeCapacity], greedy_state: _Live,
-                 greedy_moves: List[Dict[str, Any]], db_caps: Dict[int, Optional["SpreadCap"]]):
+                 greedy_moves: List[Dict[str, Any]], db_caps: Dict[int, Optional["SpreadCap"]],
+                 force: bool = False):
     """Reduce churn: the greedy search optimises score, not move count, so it can
     route interchangeable shards through a node (land one, later move another off
-    it). Since shards of the same (DB, role) are interchangeable, only the per-node
-    COUNT matters for balance. This re-derives the MINIMAL set of direct moves from
-    the net per-node count change, eliminating pass-throughs.
+    it) and even fail a group over and back. Since shards of the same (DB, role) are
+    interchangeable, only the per-node COUNT matters for balance. This re-derives the
+    MINIMAL set of ops from the net change, eliminating both pass-through shard moves
+    and reversing/repeated failovers.
 
-    Safety: returns the compacted move list ONLY if every move validates and the
-    resulting balance score is identical to the greedy plan; otherwise None (the
-    caller keeps the original, known-good plan). So it never produces a worse or
-    invalid plan - at worst it changes nothing.
+    Failovers are handled (not skipped): a failover swaps a group's master/replica
+    roles in place (no data moves) but shifts the master-carried endpoint, so it can
+    affect load. We therefore rebuild the plan from the greedy END state -
+    emit ONE failover per HA group whose master/replica identity net-changed (dropping
+    any fail-over-then-back), then derive shard moves grouped by the group's FINAL
+    role, ordered failovers-first so a demoted-then-migrated shard is a replica (hence
+    movable) by the time its move replays.
+
+    Safety: returns the compacted move list ONLY if the reconstructed end state matches
+    the greedy roles exactly, every move validates, the balance score is identical, and
+    the result is strictly fewer operations; otherwise None (the caller keeps the
+    original, known-good plan). So it never produces a worse or invalid plan - at worst
+    it changes nothing.
     """
-    # Compaction re-derives shard moves from net per-(DB,role) counts; that
-    # assumption breaks once roles change, so skip it when the plan has failovers.
-    if any(m["kind"] == "failover" for m in greedy_moves):
-        return None
     shard_moves = [m for m in greedy_moves if m["kind"] == "shard"]
     ep_moves = [m for m in greedy_moves if m["kind"] == "endpoint"]
-    if not shard_moves:
-        return None
+    fo_moves = [m for m in greedy_moves if m["kind"] == "failover"]
+    if not shard_moves and not fo_moves:
+        return None  # only endpoint re-binds (already minimal) -> nothing to compact
 
-    target = greedy_state.place
+    target = greedy_state.place        # final node per physical shard
+    target_role = greedy_state.role    # final role per physical shard
     live = _Live(cluster, caps)
+
+    # --- 1. Net failovers: one per HA group whose master/replica identity net-swapped.
+    # A group failed over an even number of times nets to no change (dropped here); an
+    # odd number nets to a single role swap. do_failover keeps processes in place and
+    # recomputes the master-carried endpoint, so replaying only the net swaps reproduces
+    # the greedy end roles AND endpoint load.
+    new_fo: List[Dict[str, Any]] = []
+    for db in movable_databases(cluster):
+        seen: set = set()
+        for s in cluster.shards_by_bdb[db.uid]:
+            if s.ha_group in seen:
+                continue
+            seen.add(s.ha_group)
+            members = [m for m in cluster.shards_by_bdb[db.uid] if m.ha_group == s.ha_group]
+            if len(members) != 2:
+                continue  # only plain master+replica pairs fail over
+            om = next((m for m in members if m.role == "master"), None)
+            osl = next((m for m in members if m.role == "slave"), None)
+            if om is None or osl is None:
+                continue
+            if target_role[om.uid] == "master":
+                continue  # role unchanged for this group -> no failover needed
+            live.do_failover(db, om.uid, osl.uid)  # promote original replica -> master
+            new_fo.append({
+                "kind": "failover", "db": db.uid, "db_name": db.name,
+                "master_shard": om.uid, "slave_shard": osl.uid, "role": "failover",
+                "shard": om.uid, "src": om.node_uid, "dst": osl.node_uid, "bytes": 0,
+                "align": any(m.get("align") for m in fo_moves
+                             if m.get("master_shard") == om.uid),
+            })
+    # The net failovers must reproduce the greedy end roles exactly; if not (e.g. a
+    # group with an unexpected shape), bail rather than emit a divergent plan.
+    for db in movable_databases(cluster):
+        for s in cluster.shards_by_bdb[db.uid]:
+            if live.role[s.uid] != target_role[s.uid]:
+                return None
+
+    # --- 2. Net shard moves, grouped by the group's FINAL role (post-failover). Only
+    # per-node COUNT matters, so match surplus nodes to deficit nodes directly.
     new_shard: List[Dict[str, Any]] = []
     for db in movable_databases(cluster):
         for role in ("master", "slave"):
-            group = [s for s in cluster.shards_by_bdb[db.uid] if s.role == role]
+            group = [s for s in cluster.shards_by_bdb[db.uid] if target_role[s.uid] == role]
             if not group:
                 continue
-            init_c = Counter(s.node_uid for s in group)
+            init_c = Counter(s.node_uid for s in group)   # processes don't move on failover
             fin_c = Counter(target[s.uid] for s in group)
             if init_c == fin_c:
                 continue  # group's distribution unchanged -> no moves needed
@@ -1869,7 +1925,8 @@ def compact_plan(cluster: Cluster, caps: Dict[int, NodeCapacity], greedy_state: 
             for src_n, dst_n in zip(surplus, deficit):
                 moved = False
                 for s in group:
-                    if live.place[s.uid] == src_n and live.valid_move(s, dst_n, db, db_caps):
+                    if live.place[s.uid] == src_n and live.valid_move(
+                            s, dst_n, db, db_caps, ignore_ram=force):
                         live.do_move(s, dst_n, db)
                         new_shard.append({
                             "kind": "shard", "shard": s.uid, "db": db.uid,
@@ -1887,11 +1944,13 @@ def compact_plan(cluster: Cluster, caps: Dict[int, NodeCapacity], greedy_state: 
             return None
         live.do_ep_move(db, m["src"], m["dst"])
 
-    # Must be exactly equivalent in balance, and actually fewer operations.
+    # Must be exactly equivalent in balance, and actually fewer operations. Emit
+    # failovers first so each dependent (demoted-then-migrated) shard move is valid
+    # when build_plan replays the list in order.
     if abs(score_from_loads(live.loads, caps).overall
            - score_from_loads(greedy_state.loads, caps).overall) > 1e-6:
         return None
-    compacted = new_shard + ep_moves
+    compacted = new_fo + new_shard + ep_moves
     if len(compacted) >= len(greedy_moves):
         return None
     return compacted
@@ -3699,7 +3758,8 @@ class _Ctx:
         # Step 2 artifacts (force relaxes RAM/CPU resource limits)
         self.state, greedy_moves, self.db_caps = optimize(self.cluster, self.caps, force=force)
         # Reduce churn: replace with a minimal-move equivalent plan when possible.
-        compacted = compact_plan(self.cluster, self.caps, self.state, greedy_moves, self.db_caps)
+        compacted = compact_plan(self.cluster, self.caps, self.state, greedy_moves,
+                                 self.db_caps, force=force)
         self.moves = compacted if compacted is not None else greedy_moves
         self.raw_move_count = len(greedy_moves)
         self.des_score = score_from_loads(self.state.loads, self.caps)
