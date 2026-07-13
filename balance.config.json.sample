@@ -7,6 +7,10 @@
     "(seconds; default 30): the hard wall-clock budget, during 'execute', to wait for",
     "the cluster status to return to OK after each shard/failover or endpoint op. Put",
     "them under 'databases' and they are ignored with a warning.",
+    "rest_post_op_settle_seconds is CLUSTER-ONLY (seconds; default 15): REST execute",
+    "only - a minimum quiet period held after each op (re-verifying) before the next,",
+    "because the REST API cannot observe the proxy reconciliation that lingers after a",
+    "migration; capped by the matching *_migration_check_timeout.",
     "ALWAYS ON, not configurable: master/replica anti-affinity; rack-awareness when",
     "the cluster has it enabled. Setting those false here is ignored with a warning."
   ],
@@ -22,7 +26,8 @@
     "exclude_from_balancing": false,
 
     "shard_migration_check_timeout": 30,
-    "endpoint_migration_check_timeout": 30
+    "endpoint_migration_check_timeout": 30,
+    "rest_post_op_settle_seconds": 15
   },
 
   "databases": {

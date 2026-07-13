@@ -141,10 +141,19 @@ ENDPOINT_VCPU = 1.5    # default vCPU per endpoint (proxy); configurable
 #                                        failover during 'execute', for the cluster
 #                                        status to return to OK before aborting (default 30).
 #   endpoint_migration_check_timeout   - same, after each endpoint re-bind (default 30).
+#   rest_post_op_settle_seconds        - REST execute only: minimum quiet period held
+#                                        after each op before the next one, even once the
+#                                        status looks OK. The REST API cannot observe the
+#                                        proxy/DMC routing reconciliation (rladmin's
+#                                        WATCHDOG 'multiple nodes') that lingers after a
+#                                        migration completes, so this bounded hold gives
+#                                        it time to clear (default 15; capped by the
+#                                        matching *_migration_check_timeout).
 # ALWAYS-ON (not configurable): master/replica anti-affinity; rack-awareness
 # (when the cluster has it enabled). Setting these false in config is ignored.
 # --------------------------------------------------------------------------- #
-DEFAULT_CHECK_TIMEOUT = 30   # seconds; deploy health-gate budget per op (see below)
+DEFAULT_CHECK_TIMEOUT = 30          # seconds; deploy health-gate budget per op (see below)
+DEFAULT_REST_POST_OP_SETTLE = 15    # seconds; REST-only minimum settle hold after each op
 
 CONFIG_DEFAULTS = {
     # resources
@@ -159,10 +168,12 @@ CONFIG_DEFAULTS = {
     # deploy health-gate budgets (CLUSTER-ONLY; no per-DB override)
     "shard_migration_check_timeout": DEFAULT_CHECK_TIMEOUT,
     "endpoint_migration_check_timeout": DEFAULT_CHECK_TIMEOUT,
+    "rest_post_op_settle_seconds": DEFAULT_REST_POST_OP_SETTLE,
 }
 _LOCKED_RULES = ("anti_affinity", "rack_awareness")
 # Keys that only make sense cluster-wide; a per-DB entry cannot override them.
-_CLUSTER_ONLY = ("shard_migration_check_timeout", "endpoint_migration_check_timeout")
+_CLUSTER_ONLY = ("shard_migration_check_timeout", "endpoint_migration_check_timeout",
+                 "rest_post_op_settle_seconds")
 
 
 class Config:
@@ -219,6 +230,9 @@ class Config:
 
     def endpoint_check_timeout(self) -> float:
         return float(self.cluster.get("endpoint_migration_check_timeout", DEFAULT_CHECK_TIMEOUT))
+
+    def rest_post_op_settle(self) -> float:
+        return float(self.cluster.get("rest_post_op_settle_seconds", DEFAULT_REST_POST_OP_SETTLE))
 
 
 def load_config(path: Optional[str]) -> Config:
@@ -3704,6 +3718,10 @@ class _Ctx:
 # see CONFIG_DEFAULTS and Config.shard_check_timeout / endpoint_check_timeout). They
 # must be generous enough for at least one full `rladmin status extra all` (a heavy
 # command that reconnects and dumps every section) to complete AND the op to settle.
+# REST status reads return instantly, so the REST gate waits this many seconds before
+# its FIRST health poll (bounded by the timeout) - otherwise it could report OK before
+# a just-issued op has begun reconfiguring (the settling the proxy watchdog reflects).
+REST_SETTLE_WAIT = 3
 
 
 # --------------------------------------------------------------------------- #
@@ -3848,15 +3866,18 @@ def cluster_health(client: RladminClient, cmd_timeout: float = 60) -> Tuple[bool
     return (not problems), problems
 
 
+_ACTION_IN_PROGRESS = ("pending", "active", "queued", "running", "starting", "initializing")
+
+
 def rest_health(client: RestClient, cmd_timeout: float = 30) -> Tuple[bool, List[str]]:
     """REST equivalent of cluster_health: flag any node/db/shard not active/ok via
-    /v1/nodes, /v1/bdbs, /v1/shards, incl. shard/endpoint watchdog status when the
-    API exposes it. Each GET is bounded by cmd_timeout so a stuck check counts as a
-    problem, not a hang. Returns (ok, problems)."""
-    def bad_wd(v) -> bool:  # watchdog value present and not healthy
-        v = str(v or "").lower()
-        return bool(v) and v not in ("ok", "active")
-
+    /v1/nodes, /v1/bdbs, /v1/shards. NOTE: the rladmin WATCHDOG_STATUS (e.g. 'internal
+    disable', 'multiple nodes: [...]') during shard/endpoint settling is a proxy/DMC
+    view NOT exposed on the REST shard/endpoint objects; to catch that window, also
+    poll /v1/actions and treat any in-progress state-machine/task as 'not settled yet'
+    (so the gate keeps waiting until the cluster has no operation in flight). Each GET
+    is bounded by cmd_timeout so a stuck check counts as a problem, not a hang.
+    Returns (ok, problems)."""
     try:
         nodes = client.get("/v1/nodes", timeout=cmd_timeout)
         bdbs = client.get("/v1/bdbs", timeout=cmd_timeout)
@@ -3868,27 +3889,58 @@ def rest_health(client: RestClient, cmd_timeout: float = 30) -> Tuple[bool, List
         st = str(n.get("status", "")).lower()
         if st and st != "active":
             problems.append(f"node:{n.get('uid')} status={n.get('status')}")
+    # Per-DB shard-instance count, to detect a not-yet-cleaned-up migration (a leftover
+    # copy on the source node leaves MORE instances than the DB should have).
+    inst_count: Dict[int, int] = {}
+    for s in shards if isinstance(shards, list) else []:
+        try:
+            inst_count[int(s.get("bdb_uid"))] = inst_count.get(int(s.get("bdb_uid")), 0) + 1
+        except (TypeError, ValueError):
+            continue
     for b in bdbs if isinstance(bdbs, list) else []:
         st = str(b.get("status", "")).lower()
-        if st and st != "active":
+        if st and st != "active":  # 'active-change-pending' etc. -> keep waiting
             problems.append(f"db:{b.get('uid')} ({b.get('name', '')}) status={b.get('status')}")
-        for e in (b.get("endpoints") or []):  # endpoint watchdog, when exposed
-            if bad_wd(e.get("watchdog_status")):
-                problems.append(f"endpoint {e.get('uid')} (db:{b.get('uid')}) "
-                                f"watchdog={e.get('watchdog_status')}")
+        sc = b.get("shards_count")
+        if sc not in (None, "") and int(sc) > 0:  # expected total instances = masters * (2 if repl)
+            expected = int(sc) * (2 if b.get("replication") else 1)
+            actual = inst_count.get(int(b.get("uid")), expected)
+            if actual != expected:
+                problems.append(f"db:{b.get('uid')} ({b.get('name', '')}) has {actual} shard "
+                                f"instance(s), expected {expected} (migration not fully settled?)")
     for s in shards if isinstance(shards, list) else []:
         st = str(s.get("status", "")).lower()
         ds = str(s.get("detailed_status", "")).lower()
-        if (st and st != "active") or (ds and ds not in ("ok", "none")) \
-                or bad_wd(s.get("watchdog_status")):
+        if (st and st != "active") or (ds and ds not in ("ok", "none")):
             problems.append(f"shard {s.get('uid')} (db:{s.get('bdb_uid')}) "
-                            f"status={s.get('status')} detailed={s.get('detailed_status')}"
-                            f" watchdog={s.get('watchdog_status', '-')}")
+                            f"status={s.get('status')} detailed={s.get('detailed_status')}")
+    # In-progress cluster operations (shard migration / endpoint reconfiguration /
+    # rebalancing). The proxy watchdog settling that rladmin shows is not on the
+    # shard/endpoint REST objects, but the driving state-machine IS visible here, so
+    # a running action means the previous op has not fully settled -> keep waiting.
+    try:
+        acts = client.get("/v1/actions", timeout=cmd_timeout)
+    except SystemExit:
+        acts = None  # older RE / transient: don't fail the whole check on this alone
+    items: List[Any] = []
+    if isinstance(acts, dict):
+        items = (acts.get("actions") or []) + (acts.get("state-machines") or [])
+    elif isinstance(acts, list):
+        items = acts
+    for a in items:
+        if not isinstance(a, dict):
+            continue
+        st = str(a.get("status", "")).lower()
+        if st in _ACTION_IN_PROGRESS:
+            who = a.get("object_name") or a.get("name") or a.get("action_uid") or "?"
+            prog = a.get("progress")
+            problems.append(f"operation '{a.get('name', '?')}' on {who} {st}"
+                            + (f" ({prog}%)" if prog not in (None, "") else ""))
     return (not problems), problems
 
 
-def wait_cluster_ok(health, timeout: float = DEFAULT_CHECK_TIMEOUT,
-                    interval: float = 3) -> Tuple[bool, List[str]]:
+def wait_cluster_ok(health, timeout: float = DEFAULT_CHECK_TIMEOUT, interval: float = 3,
+                    settle: float = 0.0, min_hold: float = 0.0) -> Tuple[bool, List[str]]:
     """Poll a deployer's health(cmd_timeout) -> (ok, problems) until OK, within a HARD
     wall-clock budget of `timeout` seconds from now (monotonic).
 
@@ -3898,9 +3950,20 @@ def wait_cluster_ok(health, timeout: float = DEFAULT_CHECK_TIMEOUT,
     little budget remains for one to complete - never firing a doomed micro-check
     (which is what produced the misleading 'did not respond within 2s'). On failure we
     return the last real status, or - if even the first, full-budget check could not
-    finish - a clean 'within <timeout>s' timeout. Returns (ok, problems)."""
-    deadline = time.monotonic() + timeout
+    finish - a clean 'within <timeout>s' timeout.
+
+    `settle` delays the FIRST check by that many seconds. `min_hold` is a MINIMUM quiet
+    period: OK is not declared before it elapses, and the check keeps re-verifying
+    throughout - so a state that only looks clean because REST can't see a lingering
+    proxy/DMC reconciliation is given time to actually settle. Both are bounded so a
+    full check still fits in the budget. Returns (ok, problems)."""
+    start = time.monotonic()
+    deadline = start + timeout
+    _fit = max(0.0, timeout - max(interval, 3.0))  # leave room for one real check
+    hold_until = start + min(min_hold, _fit)       # don't return OK before this
     problems: List[str] = []
+    if settle > 0:
+        time.sleep(min(settle, _fit))
     slowest = 0.0          # longest observed check, to size the "enough budget?" floor
     first = True
     while True:
@@ -3913,12 +3976,13 @@ def wait_cluster_ok(health, timeout: float = DEFAULT_CHECK_TIMEOUT,
         ok, problems = health(remaining)       # full remaining budget for this check
         slowest = max(slowest, time.monotonic() - t0)
         first = False
-        if ok:
+        if ok and time.monotonic() >= hold_until:   # clean AND minimum hold elapsed
             return True, problems
+        # not OK, or OK but still within the minimum hold -> keep polling
         remaining = deadline - time.monotonic()
         if remaining < max(slowest, 3.0):       # no room for another real check
             break
-        time.sleep(min(interval, remaining))    # settle, never past the deadline
+        time.sleep(min(interval, remaining))    # re-verify, never past the deadline
     return False, problems
 
 
@@ -4037,17 +4101,25 @@ def deploy(ctx: _Ctx, deployer, args: argparse.Namespace, verbose: bool = False)
         return 0
 
     data_done = ep_done = 0
+    is_rest = deployer.label == "REST"
     shard_wait = ctx.cluster.config.shard_check_timeout()       # cluster config, default 30s
     ep_wait = ctx.cluster.config.endpoint_check_timeout()       # cluster config, default 30s
-    status_src = ("rladmin status extra all" if deployer.label == "rladmin"
-                  else "REST /v1 status")
+    # REST-only: the API can't observe the proxy/DMC routing reconciliation that lingers
+    # after a migration, so hold a minimum settle period (re-verifying) before the next op.
+    rest_hold = ctx.cluster.config.rest_post_op_settle() if is_rest else 0.0
+    status_src = "rladmin status extra all" if not is_rest else "REST /v1 status + actions"
 
     def gate(after: str, timeout: float) -> bool:
         """Verify cluster status after an op; wait up to `timeout`s (hard wall-clock)
         for it to return to OK, incl. shard/endpoint watchdog status. On failure,
         print the errors + recovery guidance."""
-        print(f"    verifying cluster status ({status_src}, up to {timeout:g}s)...")
-        ok_health, problems = wait_cluster_ok(deployer.health, timeout=timeout, interval=3)
+        hold = f", settle {rest_hold:g}s" if rest_hold else ""
+        print(f"    verifying cluster status ({status_src}, up to {timeout:g}s{hold})...")
+        # REST reads are instant -> give a just-issued op a moment to start settling
+        # before the first poll (rladmin's status dump is already slow enough).
+        settle = REST_SETTLE_WAIT if is_rest else 0.0
+        ok_health, problems = wait_cluster_ok(deployer.health, timeout=timeout,
+                                              interval=3, settle=settle, min_hold=rest_hold)
         if ok_health:
             print("    status OK")
             return True
