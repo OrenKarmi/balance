@@ -1,0 +1,448 @@
+{
+  "force": false,
+  "node_removal_capacity": {
+    "heterogeneous": false,
+    "removable": 3,
+    "removed_nodes": [
+      {
+        "cores": 12,
+        "total_memory": 34359738368,
+        "uid": 1
+      },
+      {
+        "cores": 12,
+        "total_memory": 34359738368,
+        "uid": 2
+      },
+      {
+        "cores": 12,
+        "total_memory": 34359738368,
+        "uid": 3
+      }
+    ],
+    "total": 4
+  },
+  "step1_current": {
+    "cluster": "redis-enterprise-cluster",
+    "cpu_model": {
+      "endpoint_vcpu": 1.5,
+      "note": "cluster defaults; per-DB overrides may apply",
+      "shard_vcpu": 1.0
+    },
+    "databases_in_scope": [
+      {
+        "endpoints": 4,
+        "memory_required": 1073741824,
+        "memory_size": 1073741824,
+        "name": "db1",
+        "per_shard_memory": 268435456,
+        "proxy_policy": "all-master-shards",
+        "replication": false,
+        "shard_placement": "dense",
+        "shards_count": 4,
+        "total_shards": 4,
+        "uid": 1,
+        "vcpu_required": 10.0
+      }
+    ],
+    "databases_out_of_scope": [],
+    "nodes": [
+      {
+        "addr": "172.16.22.11",
+        "available_ram": 25769803776,
+        "cores": 12,
+        "endpoints": 1,
+        "free_vcpu": 9.5,
+        "hostable": true,
+        "master_shards": 1,
+        "max_shards": 100,
+        "provisional_ram": 25769803776,
+        "provisioned_memory": 268435456,
+        "rack_id": null,
+        "ram_capacity": 26038239232,
+        "replica_shards": 0,
+        "required_vcpu": 2.5,
+        "status": "ok",
+        "total_memory": 34359738368,
+        "uid": 1,
+        "used_memory": 268435456
+      },
+      {
+        "addr": "172.16.22.12",
+        "available_ram": 25769803776,
+        "cores": 12,
+        "endpoints": 1,
+        "free_vcpu": 9.5,
+        "hostable": true,
+        "master_shards": 1,
+        "max_shards": 100,
+        "provisional_ram": 25769803776,
+        "provisioned_memory": 268435456,
+        "rack_id": null,
+        "ram_capacity": 26038239232,
+        "replica_shards": 0,
+        "required_vcpu": 2.5,
+        "status": "ok",
+        "total_memory": 34359738368,
+        "uid": 2,
+        "used_memory": 268435456
+      },
+      {
+        "addr": "172.16.22.13",
+        "available_ram": 25769803776,
+        "cores": 12,
+        "endpoints": 1,
+        "free_vcpu": 9.5,
+        "hostable": true,
+        "master_shards": 1,
+        "max_shards": 100,
+        "provisional_ram": 25769803776,
+        "provisioned_memory": 268435456,
+        "rack_id": null,
+        "ram_capacity": 26038239232,
+        "replica_shards": 0,
+        "required_vcpu": 2.5,
+        "status": "ok",
+        "total_memory": 34359738368,
+        "uid": 3,
+        "used_memory": 268435456
+      },
+      {
+        "addr": "172.16.22.14",
+        "available_ram": 25769803776,
+        "cores": 12,
+        "endpoints": 1,
+        "free_vcpu": 9.5,
+        "hostable": true,
+        "master_shards": 1,
+        "max_shards": 100,
+        "provisional_ram": 25769803776,
+        "provisioned_memory": 268435456,
+        "rack_id": null,
+        "ram_capacity": 26038239232,
+        "replica_shards": 0,
+        "required_vcpu": 2.5,
+        "status": "ok",
+        "total_memory": 34359738368,
+        "uid": 4,
+        "used_memory": 268435456
+      }
+    ],
+    "rack_aware": false,
+    "ram_source": "rladmin status (PROVISIONAL_RAM); shard memory = USED_MEMORY (no configured limit in status output)",
+    "score": {
+      "cpu_cv": 0.0,
+      "cpu_score": 100.0,
+      "is_balanced": true,
+      "memory_cv": 0.0,
+      "memory_score": 100.0,
+      "overall": 100.0
+    },
+    "warnings": []
+  },
+  "step2_desired": {
+    "cluster": "redis-enterprise-cluster",
+    "deployable": true,
+    "feasibility": {
+      "cpu_short": 0,
+      "lines": [],
+      "ram_short": 0,
+      "recommendation": null
+    },
+    "feasible": true,
+    "forced": false,
+    "migration_block": {
+      "blocked": false,
+      "largest_free_headroom": 26038239232,
+      "smallest_blocked_shard": 0
+    },
+    "moves": [
+      {
+        "bytes": 268435456,
+        "consolidate": true,
+        "db": 1,
+        "db_name": "db1",
+        "dst": 1,
+        "kind": "shard",
+        "role": "master",
+        "shard": 2,
+        "src": 2
+      },
+      {
+        "bytes": 268435456,
+        "consolidate": true,
+        "db": 1,
+        "db_name": "db1",
+        "dst": 1,
+        "kind": "shard",
+        "role": "master",
+        "shard": 3,
+        "src": 3
+      },
+      {
+        "bytes": 268435456,
+        "consolidate": true,
+        "db": 1,
+        "db_name": "db1",
+        "dst": 1,
+        "kind": "shard",
+        "role": "master",
+        "shard": 4,
+        "src": 4
+      }
+    ],
+    "nodes": [
+      {
+        "cores": 12,
+        "current": {
+          "endpoints": 1,
+          "provisioned_memory": 268435456,
+          "required_vcpu": 2.5,
+          "shards": 1
+        },
+        "desired": {
+          "endpoints": 1,
+          "provisioned_memory": 1073741824,
+          "required_vcpu": 5.5,
+          "shards": 4
+        },
+        "rack_id": null,
+        "ram_ceiling": 26038239232,
+        "uid": 1
+      },
+      {
+        "cores": 12,
+        "current": {
+          "endpoints": 1,
+          "provisioned_memory": 268435456,
+          "required_vcpu": 2.5,
+          "shards": 1
+        },
+        "desired": {
+          "endpoints": 0,
+          "provisioned_memory": 0,
+          "required_vcpu": 0.0,
+          "shards": 0
+        },
+        "rack_id": null,
+        "ram_ceiling": 26038239232,
+        "uid": 2
+      },
+      {
+        "cores": 12,
+        "current": {
+          "endpoints": 1,
+          "provisioned_memory": 268435456,
+          "required_vcpu": 2.5,
+          "shards": 1
+        },
+        "desired": {
+          "endpoints": 0,
+          "provisioned_memory": 0,
+          "required_vcpu": 0.0,
+          "shards": 0
+        },
+        "rack_id": null,
+        "ram_ceiling": 26038239232,
+        "uid": 3
+      },
+      {
+        "cores": 12,
+        "current": {
+          "endpoints": 1,
+          "provisioned_memory": 268435456,
+          "required_vcpu": 2.5,
+          "shards": 1
+        },
+        "desired": {
+          "endpoints": 0,
+          "provisioned_memory": 0,
+          "required_vcpu": 0.0,
+          "shards": 0
+        },
+        "rack_id": null,
+        "ram_ceiling": 26038239232,
+        "uid": 4
+      }
+    ],
+    "rebalance_blocked_by_memory": false,
+    "score": {
+      "cpu_current": 100.0,
+      "cpu_desired": 0.0,
+      "current": 100.0,
+      "desired": 0.0,
+      "memory_current": 100.0,
+      "memory_desired": 0.0
+    }
+  },
+  "step3_plan": {
+    "cluster": "redis-enterprise-cluster",
+    "deployable": true,
+    "feasibility": {
+      "cpu_short": 0,
+      "lines": [],
+      "ram_short": 0,
+      "recommendation": null
+    },
+    "feasible": true,
+    "forced": false,
+    "node_plan": [
+      {
+        "actions": [
+          "+db1:M2",
+          "+db1:M3",
+          "+db1:M4"
+        ],
+        "cpu_cur": 0.20833333333333334,
+        "cpu_new": 0.4583333333333333,
+        "mem_cur": 0.010309278350515464,
+        "mem_new": 0.041237113402061855,
+        "node": 1,
+        "rack": "-"
+      },
+      {
+        "actions": [
+          "-db1:M2",
+          "-db1:EP"
+        ],
+        "cpu_cur": 0.20833333333333334,
+        "cpu_new": 0.0,
+        "mem_cur": 0.010309278350515464,
+        "mem_new": 0.0,
+        "node": 2,
+        "rack": "-"
+      },
+      {
+        "actions": [
+          "-db1:M3",
+          "-db1:EP"
+        ],
+        "cpu_cur": 0.20833333333333334,
+        "cpu_new": 0.0,
+        "mem_cur": 0.010309278350515464,
+        "mem_new": 0.0,
+        "node": 3,
+        "rack": "-"
+      },
+      {
+        "actions": [
+          "-db1:M4",
+          "-db1:EP"
+        ],
+        "cpu_cur": 0.20833333333333334,
+        "cpu_new": 0.0,
+        "mem_cur": 0.010309278350515464,
+        "mem_new": 0.0,
+        "node": 4,
+        "rack": "-"
+      }
+    ],
+    "read_only": true,
+    "rebalance_blocked_by_memory": false,
+    "score": {
+      "current": 100.0,
+      "final": 0.0
+    },
+    "step_count": 3,
+    "steps": [
+      {
+        "bytes": 268435456,
+        "command": "rladmin migrate shard 2 target_node 1",
+        "db": 1,
+        "db_name": "db1",
+        "from_node": 2,
+        "operation": "shard",
+        "role": "master",
+        "score_after": 34.22,
+        "shard": 2,
+        "slots": "4096-8191",
+        "step": 1,
+        "to_node": 1,
+        "valid": true
+      },
+      {
+        "bytes": 268435456,
+        "command": "rladmin migrate shard 3 target_node 1",
+        "db": 1,
+        "db_name": "db1",
+        "from_node": 3,
+        "operation": "shard",
+        "role": "master",
+        "score_after": 0.0,
+        "shard": 3,
+        "slots": "8192-12287",
+        "step": 2,
+        "to_node": 1,
+        "valid": true
+      },
+      {
+        "bytes": 268435456,
+        "command": "rladmin migrate shard 4 target_node 1",
+        "db": 1,
+        "db_name": "db1",
+        "from_node": 4,
+        "operation": "shard",
+        "role": "master",
+        "score_after": 0.0,
+        "shard": 4,
+        "slots": "12288-16383",
+        "step": 3,
+        "to_node": 1,
+        "valid": true
+      }
+    ],
+    "topology": {
+      "current": [
+        {
+          "db": 1,
+          "endpoint_id": "1:1",
+          "endpoint_nodes": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "excluded": false,
+          "in_scope": true,
+          "name": "db1",
+          "proxy_policy": "all-master-shards",
+          "shards": {
+            "1": [
+              "M1"
+            ],
+            "2": [
+              "M2"
+            ],
+            "3": [
+              "M3"
+            ],
+            "4": [
+              "M4"
+            ]
+          }
+        }
+      ],
+      "planned": [
+        {
+          "db": 1,
+          "endpoint_id": "1:1",
+          "endpoint_nodes": [
+            1
+          ],
+          "excluded": false,
+          "in_scope": true,
+          "name": "db1",
+          "proxy_policy": "all-master-shards",
+          "shards": {
+            "1": [
+              "M1",
+              "M2",
+              "M3",
+              "M4"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

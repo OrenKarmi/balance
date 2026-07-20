@@ -1,0 +1,111 @@
+CLUSTER:
+OK. Cluster master: 1 (172.16.22.11)
+Cluster health: OK, (0, 0.0, 1.7999999523162842)
+failures/minute - avg1 0.00, avg15 0.00, avg60 1.80.
+
+CLUSTER NODES:
+NODE:ID ROLE   ADDRESS      EXTERNAL_ADDRESS HOSTNAME     MASTERS SLAVES OVERBOOKING_DEPTH SHARDS CORES FREE_RAM       PROVISIONAL_RAM VERSION   SHA    RACK-ID SECOND-RACK-ID STATUS
+*node:1 master 172.16.22.11 172.16.22.11     ed76992dd329 4       4      10.34GB           8/100  12    18.72GB/31.34GB 10.34GB/25.7GB 8.0.10-81 2daabf -       -              OK
+node:2  slave  172.16.22.12 172.16.22.12     0c7ac6185b00 2       5      10.59GB           7/100  12    18.72GB/31.34GB 10.59GB/25.7GB 8.0.10-81 2daabf -       -              OK
+node:3  slave  172.16.22.13 172.16.22.13     6b1841dde5ef 7       3      8.6GB             10/100 12    18.72GB/31.34GB 8.6GB/25.7GB   8.0.10-81 2daabf -       -              OK
+node:4  slave  172.16.22.14 172.16.22.14     75ed1ec5b5df 2       8      8.59GB            10/100 12    18.72GB/31.34GB 8.59GB/25.7GB  8.0.10-81 2daabf -       -              OK
+node:5  slave  172.16.22.15 172.16.22.15     9a73bba6da7b 10      2      8.6GB             12/100 12    18.72GB/31.34GB 8.6GB/25.7GB   8.0.10-81 2daabf -       -              OK
+node:6  slave  172.16.22.16 172.16.22.16     fec2d21fddd1 5       6      8.85GB            11/100 12    18.72GB/31.34GB 8.85GB/25.7GB  8.0.10-81 2daabf -       -              OK
+node:7  slave  172.16.22.17 172.16.22.17     f85763417927 2       4      11.09GB           6/100  12    18.72GB/31.34GB 11.09GB/25.7GB 8.0.10-81 2daabf -       -              OK
+
+DATABASES:
+DB:ID NAME                TYPE  MODULE STATUS SHARDS MEMORY_SIZE PLACEMENT REPLICATION PERSISTENCE ENDPOINT                                       CRDB EXEC_STATE EXEC_STATE_MACHINE BACKUP_PROGRESS MISSING_BACKUP_TIME REDIS_VERSION
+db:1  db1-main            redis yes    active 8      8GB         sparse    enabled     disabled    redis-12001.re-cluster1.ps-redislabs.org:12001 no   N/A        N/A                N/A             N/A                 8.4.0
+db:2  db2-low-priotiry    redis yes    active 8      4GB         sparse    enabled     disabled    redis-12002.re-cluster1.ps-redislabs.org:12002 no   N/A        N/A                N/A             N/A                 8.4.0
+db:3  db3-high-priority   redis yes    active 4      4GB         dense     enabled     disabled    redis-12003.re-cluster1.ps-redislabs.org:12003 no   N/A        N/A                N/A             N/A                 8.4.0
+db:4  db4-loader          redis yes    active 8      4GB         sparse    enabled     disabled    redis-12004.re-cluster1.ps-redislabs.org:12004 no   N/A        N/A                N/A             N/A                 8.4.0
+db:5  db5-source-of-truth redis yes    active 4      5GB         dense     enabled     disabled    redis-12005.re-cluster1.ps-redislabs.org:12005 no   N/A        N/A                N/A             N/A                 8.4.0
+
+ENDPOINTS:
+DB:ID NAME                ID           NODE   ROLE              SSL WATCHDOG_STATUS
+db:1  db1-main            endpoint:1:1 node:6 all-master-shards No  OK
+db:1  db1-main            endpoint:1:1 node:3 all-master-shards No  OK
+db:1  db1-main            endpoint:1:1 node:1 all-master-shards No  OK
+db:1  db1-main            endpoint:1:1 node:7 all-master-shards No  OK
+db:1  db1-main            endpoint:1:1 node:4 all-master-shards No  OK
+db:1  db1-main            endpoint:1:1 node:2 all-master-shards No  OK
+db:1  db1-main            endpoint:1:1 node:5 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:6 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:3 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:1 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:7 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:4 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:2 all-master-shards No  OK
+db:2  db2-low-priotiry    endpoint:2:1 node:5 all-master-shards No  OK
+db:3  db3-high-priority   endpoint:3:1 node:5 single            No  OK
+db:4  db4-loader          endpoint:4:1 node:5 all-master-shards No  OK
+db:4  db4-loader          endpoint:4:1 node:6 all-master-shards No  OK
+db:4  db4-loader          endpoint:4:1 node:1 all-master-shards No  OK
+db:5  db5-source-of-truth endpoint:5:1 node:3 single            No  OK
+
+SHARDS:
+DB:ID NAME                ID       NODE   ROLE   SLOTS       USED_MEMORY RAM_FRAG WATCHDOG_STATUS STATUS
+db:1  db1-main            redis:1  node:1 master 0-2047      2.34MB      19.5MB   OK              OK
+db:1  db1-main            redis:2  node:2 slave  0-2047      1.49MB      19.5MB   OK              OK
+db:1  db1-main            redis:3  node:3 master 2048-4095   2.31MB      19.48MB  OK              OK
+db:1  db1-main            redis:4  node:4 slave  2048-4095   1.49MB      19.55MB  OK              OK
+db:1  db1-main            redis:5  node:5 master 4096-6143   2.31MB      19.39MB  OK              OK
+db:1  db1-main            redis:6  node:6 slave  4096-6143   1.49MB      19.51MB  OK              OK
+db:1  db1-main            redis:7  node:7 master 6144-8191   2.31MB      19.42MB  OK              OK
+db:1  db1-main            redis:8  node:1 slave  6144-8191   1.49MB      19.41MB  OK              OK
+db:1  db1-main            redis:9  node:2 master 8192-10239  2.31MB      19.38MB  OK              OK
+db:1  db1-main            redis:10 node:3 slave  8192-10239  1.49MB      19.44MB  OK              OK
+db:1  db1-main            redis:11 node:4 master 10240-12287 2.34MB      19.46MB  OK              OK
+db:1  db1-main            redis:12 node:5 slave  10240-12287 1.49MB      19.37MB  OK              OK
+db:1  db1-main            redis:13 node:6 master 12288-14335 2.31MB      19.41MB  OK              OK
+db:1  db1-main            redis:14 node:7 slave  12288-14335 1.49MB      19.55MB  OK              OK
+db:1  db1-main            redis:15 node:1 master 14336-16383 2.37MB      19.28MB  OK              OK
+db:1  db1-main            redis:16 node:2 slave  14336-16383 1.5MB       19.35MB  OK              OK
+db:2  db2-low-priotiry    redis:17 node:3 master 0-2047      2.31MB      19.35MB  OK              OK
+db:2  db2-low-priotiry    redis:18 node:4 slave  0-2047      1.5MB       19.39MB  OK              OK
+db:2  db2-low-priotiry    redis:19 node:5 master 2048-4095   2.34MB      19.41MB  OK              OK
+db:2  db2-low-priotiry    redis:20 node:6 slave  2048-4095   1.49MB      19.42MB  OK              OK
+db:2  db2-low-priotiry    redis:21 node:7 master 4096-6143   2.31MB      19.49MB  OK              OK
+db:2  db2-low-priotiry    redis:22 node:3 slave  4096-6143   1.49MB      19.28MB  OK              OK
+db:2  db2-low-priotiry    redis:23 node:4 master 6144-8191   2.31MB      19.43MB  OK              OK
+db:2  db2-low-priotiry    redis:24 node:5 slave  6144-8191   1.49MB      19.55MB  OK              OK
+db:2  db2-low-priotiry    redis:25 node:6 master 8192-10239  2.31MB      19.4MB   OK              OK
+db:2  db2-low-priotiry    redis:26 node:7 slave  8192-10239  1.49MB      19.38MB  OK              OK
+db:2  db2-low-priotiry    redis:27 node:2 master 10240-12287 2.31MB      19.31MB  OK              OK
+db:2  db2-low-priotiry    redis:28 node:1 slave  10240-12287 1.49MB      19.41MB  OK              OK
+db:2  db2-low-priotiry    redis:29 node:1 master 12288-14335 2.31MB      19.54MB  OK              OK
+db:2  db2-low-priotiry    redis:30 node:2 slave  12288-14335 1.49MB      19.48MB  OK              OK
+db:2  db2-low-priotiry    redis:31 node:3 master 14336-16383 2.31MB      19.4MB   OK              OK
+db:2  db2-low-priotiry    redis:32 node:4 slave  14336-16383 1.5MB       19.34MB  OK              OK
+db:3  db3-high-priority   redis:33 node:5 master 0-4095      1.92MB      19.44MB  OK              OK
+db:3  db3-high-priority   redis:34 node:6 slave  0-4095      1.49MB      19.43MB  OK              OK
+db:3  db3-high-priority   redis:35 node:5 master 4096-8191   1.92MB      19.5MB   OK              OK
+db:3  db3-high-priority   redis:36 node:6 slave  4096-8191   1.49MB      19.63MB  OK              OK
+db:3  db3-high-priority   redis:37 node:5 master 8192-12287  1.92MB      19.46MB  OK              OK
+db:3  db3-high-priority   redis:38 node:6 slave  8192-12287  1.49MB      19.49MB  OK              OK
+db:3  db3-high-priority   redis:39 node:5 master 12288-16383 1.92MB      19.44MB  OK              OK
+db:3  db3-high-priority   redis:40 node:6 slave  12288-16383 1.49MB      19.48MB  OK              OK
+db:4  db4-loader          redis:41 node:7 slave  0-2047      1.46MB      19.53MB  OK              OK
+db:4  db4-loader          redis:42 node:1 slave  2048-4095   1.46MB      19.4MB   OK              OK
+db:4  db4-loader          redis:43 node:2 slave  4096-6143   1.46MB      19.39MB  OK              OK
+db:4  db4-loader          redis:44 node:3 slave  6144-8191   1.46MB      19.42MB  OK              OK
+db:4  db4-loader          redis:45 node:4 slave  8192-10239  1.46MB      19.48MB  OK              OK
+db:4  db4-loader          redis:46 node:7 slave  10240-12287 1.5MB       19.46MB  OK              OK
+db:4  db4-loader          redis:47 node:1 slave  12288-14335 1.46MB      19.38MB  OK              OK
+db:4  db4-loader          redis:48 node:2 slave  14336-16383 1.5MB       19.33MB  OK              OK
+db:4  db4-loader          redis:57 node:1 master 0-2047      2.19MB      19.23MB  OK              OK
+db:4  db4-loader          redis:58 node:5 master 2048-4095   2.19MB      19.26MB  OK              OK
+db:4  db4-loader          redis:59 node:6 master 4096-6143   2.15MB      19.49MB  OK              OK
+db:4  db4-loader          redis:60 node:5 master 6144-8191   2.15MB      19.3MB   OK              OK
+db:4  db4-loader          redis:61 node:6 master 8192-10239  2.12MB      19.52MB  OK              OK
+db:4  db4-loader          redis:62 node:5 master 10240-12287 2.15MB      19.38MB  OK              OK
+db:4  db4-loader          redis:63 node:6 master 12288-14335 2.12MB      19.41MB  OK              OK
+db:4  db4-loader          redis:64 node:5 master 14336-16383 2.15MB      19.45MB  OK              OK
+db:5  db5-source-of-truth redis:49 node:3 master 0-4095      1.9MB       19.59MB  OK              OK
+db:5  db5-source-of-truth redis:50 node:4 slave  0-4095      1.5MB       19.48MB  OK              OK
+db:5  db5-source-of-truth redis:51 node:3 master 4096-8191   1.9MB       19.61MB  OK              OK
+db:5  db5-source-of-truth redis:52 node:4 slave  4096-8191   1.5MB       19.42MB  OK              OK
+db:5  db5-source-of-truth redis:53 node:3 master 8192-12287  1.9MB       19.43MB  OK              OK
+db:5  db5-source-of-truth redis:54 node:4 slave  8192-12287  1.5MB       19.37MB  OK              OK
+db:5  db5-source-of-truth redis:55 node:3 master 12288-16383 1.92MB      19.57MB  OK              OK
+db:5  db5-source-of-truth redis:56 node:4 slave  12288-16383 1.5MB       19.4MB   OK              OK

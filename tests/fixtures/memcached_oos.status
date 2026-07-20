@@ -1,0 +1,37 @@
+CLUSTER:
+OK. Cluster master: 1 (172.16.22.11)
+Cluster health: OK
+
+CLUSTER NODES:
+NODE:ID  ROLE    ADDRESS       HOSTNAME  SHARDS  CORES  FREE_RAM     PROVISIONAL_RAM  RACK_ID  STATUS
+*node:1  master  172.16.22.11  host1     5/100   12     12.8GB/32GB  24GB/25.6GB      -        OK
+node:2   slave   172.16.22.12  host2     3/100   12     12.8GB/32GB  24GB/25.6GB      -        OK
+node:3   slave   172.16.22.13  host3     3/100   12     12.8GB/32GB  24GB/25.6GB      -        OK
+node:4   slave   172.16.22.14  host4     1/100   12     12.8GB/32GB  24GB/25.6GB      -        OK
+
+DATABASES:
+DB:ID  NAME   TYPE       STATUS  SHARDS  MEMORY_SIZE  PLACEMENT  REPLICATION  PROXY_POLICY
+db:1   db1    redis      active  4       4GB          sparse     enabled      all-master-shards
+db:2   db2mc  memcached  active  2       2GB          sparse     enabled      all-master-shards
+
+ENDPOINTS:
+DB:ID  NAME   ID            NODE    ROLE               SSL  WATCHDOG_STATUS
+db:1   db1    endpoint:1:1  node:1  all-master-shards  No   OK
+db:1   db1    endpoint:1:1  node:2  all-master-shards  No   OK
+db:2   db2mc  endpoint:2:1  node:1  all-master-shards  No   OK
+
+SHARDS:
+DB:ID  NAME   ID        NODE    ROLE    SLOTS        USED_MEMORY  RAM_FRAG  WATCHDOG_STATUS  STATUS
+db:1   db1    redis:1   node:1  master  0-4095       1GB          19.4MB    OK               OK
+db:1   db1    redis:2   node:2  slave   0-4095       614MB        19.4MB    OK               OK
+db:1   db1    redis:3   node:1  master  4096-8191    1GB          19.4MB    OK               OK
+db:1   db1    redis:4   node:3  slave   4096-8191    614MB        19.4MB    OK               OK
+db:1   db1    redis:5   node:1  master  8192-12287   1GB          19.4MB    OK               OK
+db:1   db1    redis:6   node:4  slave   8192-12287   614MB        19.4MB    OK               OK
+db:1   db1    redis:7   node:2  master  12288-16383  1GB          19.4MB    OK               OK
+db:1   db1    redis:8   node:3  slave   12288-16383  614MB        19.4MB    OK               OK
+db:2   db2mc  redis:9   node:1  master  0-8191       1GB          19.4MB    OK               OK
+db:2   db2mc  redis:10  node:2  slave   0-8191       614MB        19.4MB    OK               OK
+db:2   db2mc  redis:11  node:1  master  8192-16383   1GB          19.4MB    OK               OK
+db:2   db2mc  redis:12  node:3  slave   8192-16383   614MB        19.4MB    OK               OK
+

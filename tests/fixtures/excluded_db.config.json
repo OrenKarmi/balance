@@ -1,0 +1,5 @@
+{
+  "databases": {
+    "db2": { "exclude_from_balancing": true }
+  }
+}

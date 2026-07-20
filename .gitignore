@@ -1,0 +1,18 @@
+# Whitelist: the repo tracks the tool, its README, the sample config, and the
+# test suite. Everything else (real config, diagnostic probes, capture script,
+# status captures, generated reports, notes, __pycache__) stays local-only.
+*
+!README.md
+!balance.py
+!balance.config.json.sample
+
+# Test suite + CI (re-include the directories, then their contents).
+!.gitignore
+!/tests/
+!/tests/**
+!/.github/
+!/.github/**
+
+# ...but never track Python bytecode or local editor caches under them.
+__pycache__/
+*.pyc
