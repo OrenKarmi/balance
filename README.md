@@ -44,8 +44,12 @@ python balance.py execute                # plan, then migrate after approval
 #   on a cluster node:  rladmin status extra all > status.txt
 python balance.py plan --status-file ./status.txt
 
-# REST API:
+# REST API (default port 9443; override with --rest-port or env RL_REST_PORT):
 python balance.py plan --rest --rest-fqdn <host> --rest-user <user> --rest-password <pw>
+python balance.py plan --rest --rest-fqdn <host> --rest-user <user> --rest-password <pw> --rest-port 9444
+
+# Leave specific nodes untouched (e.g. under maintenance):
+python balance.py plan --exclude-nodes 3,5
 
 # With a rules config:
 python balance.py plan --config ./balance.config.json   # copy balance.config.json.sample first
@@ -70,8 +74,16 @@ health between operations.
   When `--force` finds nothing to change, it prints the current cluster-topology map
   so you can review the layout.
 
-Both are read-only and can be combined (e.g. `plan --force --verbose`), and they
-work with any input source (`--status-file`, `--rest`, or live `rladmin`).
+`--verbose` and `--force` are read-only and can be combined (e.g. `plan --force
+--verbose`), and they work with any input source (`--status-file`, `--rest`, or live
+`rladmin`).
+
+- `--exclude-nodes UIDS` — comma-separated node uids to **leave untouched** (e.g.
+  `--exclude-nodes 3,5`), for a node under maintenance or being retired. Nothing
+  migrates onto an excluded node and its shards stay put; it drops out of the balance
+  pool. Merges with the config `exclude_nodes` list.
+- `--rest-port PORT` — REST API port (default **9443**, or env `RL_REST_PORT`); use
+  with `--rest`.
 
 ## Configuration
 

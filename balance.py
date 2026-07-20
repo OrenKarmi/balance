@@ -137,6 +137,11 @@ ENDPOINT_VCPU = 1.5    # default vCPU per endpoint (proxy); configurable
 #   exclude_from_balancing        - true: NEVER migrate this DB's shards/endpoints;
 #                                   they still consume resources (counted), just pinned.
 # CLUSTER-ONLY (ignored under 'databases'):
+#   exclude_nodes                      - list of node uids the rebalancer must not use:
+#                                        nothing migrates ONTO them and their shards are
+#                                        left in place (like a DOWN/quorum node). They drop
+#                                        out of the balance pool (score/feasibility/targets).
+#                                        Also settable on the CLI: --exclude-nodes 3,5.
 #   shard_migration_check_timeout      - seconds to wait, after each shard migration /
 #                                        failover during 'execute', for the cluster
 #                                        status to return to OK before aborting (default 30).
@@ -165,6 +170,7 @@ CONFIG_DEFAULTS = {
     "respect_endpoint_policy": True,
     # scope
     "exclude_from_balancing": False,
+    "exclude_nodes": [],                       # CLUSTER-ONLY: node uids to leave untouched
     # deploy health-gate budgets (CLUSTER-ONLY; no per-DB override)
     "shard_migration_check_timeout": DEFAULT_CHECK_TIMEOUT,
     "endpoint_migration_check_timeout": DEFAULT_CHECK_TIMEOUT,
@@ -173,7 +179,7 @@ CONFIG_DEFAULTS = {
 _LOCKED_RULES = ("anti_affinity", "rack_awareness")
 # Keys that only make sense cluster-wide; a per-DB entry cannot override them.
 _CLUSTER_ONLY = ("shard_migration_check_timeout", "endpoint_migration_check_timeout",
-                 "rest_post_op_settle_seconds")
+                 "rest_post_op_settle_seconds", "exclude_nodes")
 
 
 class Config:
@@ -233,6 +239,18 @@ class Config:
 
     def rest_post_op_settle(self) -> float:
         return float(self.cluster.get("rest_post_op_settle_seconds", DEFAULT_REST_POST_OP_SETTLE))
+
+    def excluded_nodes(self) -> set:
+        """Node uids the rebalancer must not use (config 'exclude_nodes' and/or the
+        --exclude-nodes CLI flag, merged into the cluster scope). Non-int entries are
+        ignored."""
+        out: set = set()
+        for x in (self.cluster.get("exclude_nodes") or []):
+            try:
+                out.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
 
 
 def load_config(path: Optional[str]) -> Config:
@@ -1191,6 +1209,19 @@ class NodeCapacity:
     hostable: bool
 
 
+def apply_node_exclusions(cluster: Cluster) -> None:
+    """Mark configured exclude_nodes as non-hostable (idempotent). A non-hostable
+    node is not a migration source or target and drops out of the balance pool, so
+    its shards stay put and nothing new lands on it - the same treatment DOWN /
+    quorum-only nodes already get."""
+    excl = cluster.config.excluded_nodes()
+    if not excl:
+        return
+    for n in cluster.nodes:
+        if n.uid in excl:
+            n.hostable = False
+
+
 def node_capacities(cluster: Cluster, current_loads: Dict[int, NodeLoad]) -> Dict[int, NodeCapacity]:
     caps: Dict[int, NodeCapacity] = {}
     for n in cluster.nodes:
@@ -1539,11 +1570,17 @@ def consolidate_dense(state: _Live, caps: Dict[int, NodeCapacity],
                 continue  # nothing to consolidate
             # Prefer the node already hosting the most of these shards (fewest moves).
             for target, _n in Counter(state.place[s.uid] for s in shards).most_common():
+                if not caps[target].hostable:
+                    continue  # never consolidate onto an excluded/non-hostable node
                 tokens, ok = [], True
                 for s in shards:
                     if state.place[s.uid] == target:
                         continue
                     src = state.place[s.uid]
+                    # never migrate a shard OFF an excluded/non-hostable node either
+                    if not caps[src].hostable:
+                        ok = False
+                        break
                     if state.valid_move(s, target, db, db_caps, ignore_ram=force):
                         tokens.append((s, src, state.do_move(s, target, db)))
                     else:
@@ -1610,6 +1647,8 @@ def align_by_failover(state: "_Live", moves: List[Dict[str, Any]], force: bool =
         if len(ep) != 1:
             continue
         X = next(iter(ep))
+        if X not in state.caps or not state.caps[X].hostable:
+            continue  # don't consolidate masters onto an excluded/non-hostable endpoint node
         # Fail over ALL shards whose replica is on X (master elsewhere) -> master on X.
         applied: List[Tuple[Any, Dict[str, Any]]] = []  # (undo token, move dict)
         while True:
@@ -1791,6 +1830,8 @@ def optimize(cluster: Cluster, caps: Dict[int, NodeCapacity], max_iter: int = 50
                 m_node, s_node = state.place[m_uid], state.place[s_uid]
                 if m_node not in sources:
                     continue
+                if not caps[s_node].hostable:
+                    continue  # never promote mastership onto an excluded/non-hostable node
                 ftok = state.do_failover(db, m_uid, s_uid)  # master now on s_node
                 v, o = state.cpu_violations(), objective()
                 if force or v <= base_viol:                 # standalone failover
@@ -3683,7 +3724,40 @@ def _rest_client_from_args(args: argparse.Namespace) -> Optional[RestClient]:
         sys.stderr.write("REST needs: " + ", ".join(missing) +
                          "  (password may also come from env RL_REST_PASSWORD)\n")
         return None
-    return RestClient(fqdn, user, password)  # port 9443, self-signed TLS (RE defaults)
+    port_src = args.rest_port if args.rest_port is not None else os.environ.get("RL_REST_PORT")
+    try:
+        port = int(port_src) if port_src not in (None, "") else 9443
+    except (TypeError, ValueError):
+        sys.stderr.write(f"Invalid --rest-port {port_src!r}; must be an integer.\n")
+        return None
+    return RestClient(fqdn, user, password, port=port)  # self-signed TLS (RE default)
+
+
+def _merge_exclude_nodes(cluster: Cluster, cli_value: Optional[str]) -> None:
+    """Merge the --exclude-nodes CLI value (comma/semicolon-separated uids) into the
+    cluster config's exclude_nodes list, and warn about unknown uids or a fully
+    excluded cluster. The exclusion itself is applied later (apply_node_exclusions)."""
+    cli: set = set()
+    for tok in (cli_value or "").replace(";", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            cli.add(int(tok))
+        except ValueError:
+            sys.stderr.write(f"Ignoring --exclude-nodes entry {tok!r} (not an integer).\n")
+    merged = set(cluster.config.excluded_nodes()) | cli
+    if not merged:
+        return
+    cluster.config.cluster["exclude_nodes"] = sorted(merged)
+    known = {n.uid for n in cluster.nodes}
+    unknown = merged - known
+    if unknown:
+        sys.stderr.write("WARNING: exclude_nodes references unknown node uid(s): "
+                         + ", ".join(map(str, sorted(unknown))) + "\n")
+    if not any(n.uid not in merged and n.hostable for n in cluster.nodes):
+        sys.stderr.write("WARNING: excluding those nodes leaves no hostable node to balance "
+                         "onto; the plan will be empty.\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -3727,12 +3801,17 @@ def build_parser() -> argparse.ArgumentParser:
     rules.add_argument("--config", metavar="FILE",
                        help="JSON config: cluster-wide + per-database rules (CPU weights, "
                             "respect_shard_placement, consolidate_dense, respect_endpoint_policy, "
-                            "exclude_from_balancing). Per-DB entries override cluster defaults.")
+                            "exclude_from_balancing, exclude_nodes). Per-DB entries override "
+                            "cluster defaults.")
     rules.add_argument("--force", action="store_true",
                        help="RESOURCE OVERRIDE: still produce a balancing plan when the cluster "
                             "lacks RAM/CPU (the plan may over-commit nodes). Warns and is NOT "
                             "deployable; policy constraints (HA, rack, dense/sparse, shard "
                             "limits) are still enforced.")
+    rules.add_argument("--exclude-nodes", metavar="UIDS",
+                       help="Comma-separated node uids to leave untouched (e.g. 3,5): nothing "
+                            "migrates onto them and their shards stay put. Merged with the "
+                            "config 'exclude_nodes' list.")
 
     out = p.add_argument_group("output")
     out.add_argument("--format", choices=["text", "json", "html"], default="text",
@@ -3749,6 +3828,8 @@ def build_parser() -> argparse.ArgumentParser:
     rest.add_argument("--rest-user", metavar="USER", help="REST API user (cluster admin).")
     rest.add_argument("--rest-password", metavar="PW",
                       help="REST API password (or env RL_REST_PASSWORD).")
+    rest.add_argument("--rest-port", metavar="PORT", type=int, default=None,
+                      help="REST API port (default 9443, or env RL_REST_PORT).")
     return p
 
 
@@ -3757,6 +3838,7 @@ class _Ctx:
     def __init__(self, cluster: Cluster, force: bool = False) -> None:
         self.force = force
         self.cluster = cluster
+        apply_node_exclusions(self.cluster)   # honour config/CLI exclude_nodes
         current = Placement.current(self.cluster)
         eps = self.cluster.endpoints_by_db
         self.current_loads = compute_loads(self.cluster, current, eps)
@@ -4286,6 +4368,7 @@ def run(args: argparse.Namespace) -> int:
         cluster = discover(client)
         deployer = _RladminDeployer(client)
     cluster.config = load_config(args.config)
+    _merge_exclude_nodes(cluster, getattr(args, "exclude_nodes", None))
     ctx = _Ctx(cluster, force=args.force)
 
     if fmt == "json":

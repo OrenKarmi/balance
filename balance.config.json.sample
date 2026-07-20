@@ -11,6 +11,9 @@
     "only - a minimum quiet period held after each op (re-verifying) before the next,",
     "because the REST API cannot observe the proxy reconciliation that lingers after a",
     "migration; capped by the matching *_migration_check_timeout.",
+    "exclude_nodes is CLUSTER-ONLY (list of node uids): the rebalancer leaves those",
+    "nodes untouched - nothing migrates onto them and their shards stay put (like a",
+    "DOWN/quorum node). Also settable on the CLI: --exclude-nodes 3,5.",
     "ALWAYS ON, not configurable: master/replica anti-affinity; rack-awareness when",
     "the cluster has it enabled. Setting those false here is ignored with a warning."
   ],
@@ -24,6 +27,7 @@
     "respect_endpoint_policy": true,
 
     "exclude_from_balancing": false,
+    "exclude_nodes": [],
 
     "shard_migration_check_timeout": 30,
     "endpoint_migration_check_timeout": 30,
