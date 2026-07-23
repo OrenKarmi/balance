@@ -23,8 +23,9 @@ def _write_tmp(text):
 class TestCaptureValidation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # A known-complete capture to mutate.
-        with open(os.path.join(h.REPO_ROOT, "status.txt"), encoding="utf-8") as fh:
+        # A known-complete capture to mutate. Use a committed fixture (repo-root
+        # status.txt is git-ignored, so it is absent in a fresh CI checkout).
+        with open(h.fixture_path("mem_imbalanced"), encoding="utf-8") as fh:
             cls.full = fh.read()
 
     def _reject(self, label, text):
