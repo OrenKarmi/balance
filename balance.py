@@ -3114,44 +3114,107 @@ def endpoint_rebind_commands(cluster: Cluster, cur: "_Live", planned: "_Live"):
     return out
 
 
+def _op_from_step(s: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise a plan step into a deploy/describe op dict (every field the rladmin
+    and REST deployers may read, plus a human label)."""
+    if s["kind"] == "failover":
+        return {"kind": "failover", "db": s["db"], "db_name": s["db_name"],
+                "master_shard": s["master_shard"], "slave_shard": s["slave_shard"],
+                "src": s["src"], "dst": s["dst"], "bytes": 0,
+                "label": f"failover db:{s['db']} master shard {s['master_shard']} "
+                         f"(node{s['src']}->node{s['dst']}, no data moved)"}
+    if s["kind"] == "shard":
+        return {"kind": "shard", "db": s["db"], "db_name": s["db_name"],
+                "shard": s["shard"], "dst": s["dst"], "src": s.get("src"),
+                "bytes": s.get("bytes", 0), "role": s.get("role", "shard"),
+                "label": f"migrate {s.get('role', 'shard')} shard {s['shard']} "
+                         f"-> node {s['dst']}"}
+    return {"kind": "ep_node", "db": s["db"], "db_name": s["db_name"], "dst": s["dst"],
+            "bytes": 0, "label": f"{s['db_name']}: relocate endpoint -> node {s['dst']}"}
+
+
+def _execution_order(steps: List[Dict[str, Any]],
+                     ep_rebinds: List[Tuple["Database", str]]) -> List[Dict[str, Any]]:
+    """Flatten a plan into a CAPACITY-SAFE execution order: data ops (shard migrations
+    + failovers) in the planner-validated `steps` order (which build_plan already
+    checked free-before-fill), and each DB's endpoint ops (independent moves +
+    endpoint_to_shards re-binds) placed right after that DB's LAST data op, so proxies
+    realign to the moved masters. Endpoints are RAM/shard-neutral, so anchoring them
+    there never disturbs the data ops' capacity safety. DBs with only an endpoint
+    re-bind (no data ops) come last.
+
+    This replaces the previous per-database grouping, which could run one DB's
+    'fill node X' op before another DB's 'free node X' op and transiently over-commit."""
+    data = [s for s in steps if s["kind"] in ("shard", "failover")]
+    ep_by_db: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for s in steps:
+        if s["kind"] == "endpoint":
+            ep_by_db[s["db"]].append(_op_from_step(s))
+    for db, _cmd in ep_rebinds:
+        ep_by_db[db.uid].append({"kind": "ep_policy", "db": db.uid, "db_name": db.name,
+                                 "policy": db.proxy_policy, "bytes": 0,
+                                 "label": f"{db.name}: rebind endpoints to masters "
+                                          f"(policy {db.proxy_policy})"})
+    last_idx: Dict[int, int] = {}
+    for i, s in enumerate(data):
+        last_idx[s["db"]] = i
+    ordered: List[Dict[str, Any]] = []
+    done: set = set()
+    for i, s in enumerate(data):
+        ordered.append(_op_from_step(s))
+        db = s["db"]
+        if last_idx.get(db) == i and db in ep_by_db and db not in done:
+            ordered.extend(ep_by_db[db])
+            done.add(db)
+    for db, ops in ep_by_db.items():   # endpoint-only DBs (no data ops)
+        if db not in done:
+            ordered.extend(ops)
+            done.add(db)
+    return ordered
+
+
+def execution_order_violations(cluster: Cluster, caps: Dict[int, NodeCapacity],
+                               ordered_ops: List[Dict[str, Any]]) -> List[str]:
+    """Replay ordered_ops on a fresh model; return any point where a shard migration
+    would exceed its target node's RAM ceiling or shard-count limit AT THE MOMENT it
+    runs (what the live cluster would reject). Endpoints are RAM/shard-neutral.
+    Callers apply this only in non---force mode (force over-commits by design).
+    Normally empty - the emitted order IS the validated plan order; this is a guard so
+    a future change can't silently push a doomed order to the cluster."""
+    shard_by_uid = {s.uid: s for s in cluster.shards}
+    live = _Live(cluster, caps)
+    problems: List[str] = []
+    for op in ordered_ops:
+        if op["kind"] == "failover":
+            live.do_failover(cluster.db_by_uid[op["db"]], op["master_shard"], op["slave_shard"])
+        elif op["kind"] == "shard":
+            db = cluster.db_by_uid[op["db"]]
+            dst, c = op["dst"], caps[op["dst"]]
+            if live.loads[dst].provisioned_memory + db.per_shard_memory > c.ram_ceiling + 1:
+                problems.append(f"shard {op['shard']} -> node {dst}: RAM ceiling exceeded mid-plan")
+            elif c.max_shards is not None and \
+                    live.loads[dst].total_shards + live.other[dst] + 1 > c.max_shards:
+                problems.append(f"shard {op['shard']} -> node {dst}: shard-count limit exceeded mid-plan")
+            live.do_move(shard_by_uid[op["shard"]], dst, db)
+    return problems
+
+
 def render_commands(cluster: Cluster, caps: Dict[int, NodeCapacity],
                     steps: List[Dict[str, Any]], cur_state: Optional["_Live"],
                     planned_state: Optional["_Live"], deployer) -> str:
-    """The Step-4 commands (display only), copy-paste ready, ordered EXACTLY as
-    execution: per DB, all shard migrations then that DB's endpoint re-bind. Style
+    """The Step-4 commands (display only), copy-paste ready, in CAPACITY-SAFE
+    execution order (see _execution_order): data ops in the planner-validated plan
+    order, each DB's endpoint re-bind right after that DB's last data op. Style
     matches the input source (rladmin CLI, or REST API calls for --rest)."""
     describer = deployer if deployer is not None else _RladminDeployer(None)
     out = [f"Execute the following {describer.label} commands to balance the cluster: (verify status after each step)",
            "-" * 90]
-    data_cmds: Dict[int, List[str]] = {}  # shard migrations + failovers, in plan order
-    ep_cmds: Dict[int, List[str]] = {}
-    db_order: List[int] = []
-    for s in steps:
-        db = s["db"]
-        if db not in db_order:
-            db_order.append(db)
-        if s["kind"] == "failover":
-            op = {"kind": "failover", "db": db, "master_shard": s["master_shard"],
-                  "slave_shard": s["slave_shard"]}
-            data_cmds.setdefault(db, []).append(describer.describe(op))
-        elif s["kind"] == "shard":
-            op = {"kind": "shard", "db": db, "shard": s["shard"], "dst": s["dst"]}
-            data_cmds.setdefault(db, []).append(describer.describe(op))
-        else:
-            op = {"kind": "ep_node", "db": db, "dst": s["dst"],
-                  "label": f"{s['db_name']}: relocate endpoint -> node {s['dst']}"}
-            ep_cmds.setdefault(db, []).append(describer.describe(op))
-    if cur_state is not None and planned_state is not None:
-        for db, _cmd in endpoint_rebind_commands(cluster, cur_state, planned_state):
-            if db.uid not in db_order:
-                db_order.append(db.uid)
-            op = {"kind": "ep_policy", "db": db.uid, "policy": db.proxy_policy,
-                  "label": f"{db.name}: rebind endpoints to masters (policy {db.proxy_policy})"}
-            ep_cmds.setdefault(db.uid, []).append(describer.describe(op))
-    for db in db_order:
-        out.extend(data_cmds.get(db, []))
-        out.extend(ep_cmds.get(db, []))
-    if not db_order:
+    rebinds = (endpoint_rebind_commands(cluster, cur_state, planned_state)
+               if cur_state is not None and planned_state is not None else [])
+    ordered = _execution_order(steps, rebinds)
+    for op in ordered:
+        out.append(describer.describe(op))
+    if not ordered:
         out.append("(no changes - nothing to execute)")
     return "\n".join(out)
 
@@ -4154,10 +4217,6 @@ def deploy(ctx: _Ctx, deployer, args: argparse.Namespace, verbose: bool = False)
     If still not OK within the budget, the deploy aborts."""
     out = (["", "=" * 86, f"STEP 4 - DEPLOY (via {deployer.label})", "=" * 86]
            if verbose else [""])
-    # data ops = shard migrations + failovers, kept in PLAN ORDER (a failover must
-    # run before migrating the replica it demoted); ep_steps = independent EP moves.
-    data_steps = [s for s in ctx.steps if s["kind"] in ("shard", "failover")]
-    ep_steps = [s for s in ctx.steps if s["kind"] == "endpoint"]
     # Endpoint<->master alignment re-binds (endpoint_to_shards) are derived from the
     # actual-vs-planned endpoint diff, not from ctx.moves - so a resource-balanced
     # but endpoint-misaligned cluster still has something to deploy.
@@ -4191,48 +4250,36 @@ def deploy(ctx: _Ctx, deployer, args: argparse.Namespace, verbose: bool = False)
         print("\n".join(out))
         return 0
 
-    # Group per DB: the DB's data ops (shard migrations + failovers, IN PLAN ORDER),
-    # then that DB's endpoint re-bind. DB order = first appearance in the plan.
-    groups: Dict[int, Dict[str, Any]] = {}
-
-    def grp(db_uid, db_name):
-        return groups.setdefault(db_uid, {"name": db_name, "ops": [], "eps": []})
-
-    for s in data_steps:
-        if s["kind"] == "failover":
-            op = {"kind": "failover", "db": s["db"], "db_name": s["db_name"],
-                  "master_shard": s["master_shard"], "slave_shard": s["slave_shard"],
-                  "src": s["src"], "dst": s["dst"], "bytes": 0,
-                  "label": f"failover db:{s['db']} master shard {s['master_shard']} "
-                           f"(node{s['src']}->node{s['dst']}, no data moved)"}
-        else:
-            op = {"kind": "shard", "db": s["db"], "db_name": s["db_name"], "shard": s["shard"],
-                  "dst": s["dst"], "bytes": s["bytes"], "role": s["role"],
-                  "label": f"migrate {s['role']} shard {s['shard']} -> node {s['dst']}"}
-        grp(s["db"], s["db_name"])["ops"].append(op)
-    for s in ep_steps:  # respect_endpoint_policy=false: single endpoint to a node
-        grp(s["db"], s["db_name"])["eps"].append({
-            "kind": "ep_node", "db": s["db"], "db_name": s["db_name"], "dst": s["dst"],
-            "label": f"{s['db_name']}: relocate endpoint -> node {s['dst']}"})
-    for db, _cmd in ep_rebinds:  # endpoint_to_shards alignment (computed above)
-        grp(db.uid, db.name)["eps"].append({
-            "kind": "ep_policy", "db": db.uid, "db_name": db.name, "policy": db.proxy_policy,
-            "label": f"{db.name}: rebind endpoints to masters (policy {db.proxy_policy})"})
+    # Capacity-safe execution order: data ops in the planner-validated order, each
+    # DB's endpoint re-bind right after that DB's last data op (see _execution_order).
+    ordered = _execution_order(ctx.steps, ep_rebinds)
 
     # Drop ops the chosen deployer can't do (e.g. endpoint->node over REST) and
     # surface them as manual rladmin follow-ups rather than failing mid-deploy.
     _rl = _RladminDeployer(None)  # type: ignore[arg-type]  # only for describe()
-    unsupported: List[Dict[str, Any]] = []
-    for g in groups.values():
-        g["ops"] = [o for o in g["ops"] if deployer.supports(o)
-                    or unsupported.append(o)]  # append returns None (falsy) -> filtered out
-        g["eps"] = [o for o in g["eps"] if deployer.supports(o) or unsupported.append(o)]
+    unsupported = [o for o in ordered if not deployer.supports(o)]
+    ordered = [o for o in ordered if deployer.supports(o)]
 
-    n_migrate = sum(1 for g in groups.values() for o in g["ops"] if o["kind"] == "shard")
-    n_failover = sum(1 for g in groups.values() for o in g["ops"] if o["kind"] == "failover")
-    n_eps = sum(len(g["eps"]) for g in groups.values())
+    # Self-check: the emitted order must not transiently exceed node capacity as it
+    # runs. It won't in normal mode (it IS the validated plan order), but guard so a
+    # future change can't push a doomed order to the live cluster. --force
+    # intentionally over-commits, so this check is skipped there.
+    if not args.force:
+        transient = execution_order_violations(ctx.cluster, ctx.caps, ordered)
+        if transient:
+            out.append("DEPLOY DISABLED - the execution order would transiently exceed node")
+            out.append("capacity (a migration would be rejected mid-plan). This is a tool")
+            out.append("ordering error; please report it. Details:")
+            for p in transient:
+                out.append(f"  - {p}")
+            print("\n".join(out))
+            return 1
+
+    n_migrate = sum(1 for o in ordered if o["kind"] == "shard")
+    n_failover = sum(1 for o in ordered if o["kind"] == "failover")
+    n_eps = sum(1 for o in ordered if o["kind"] in ("ep_node", "ep_policy"))
     n_total = n_migrate + n_failover + n_eps
-    total_bytes = sum(o["bytes"] for g in groups.values() for o in g["ops"])
+    total_bytes = sum(o.get("bytes", 0) for o in ordered if o["kind"] == "shard")
 
     out.append("*** WARNING: this will MODIFY THE LIVE CLUSTER. ***")
     out.append(f"It will execute {n_migrate} shard migration(s) (~{fmt_bytes(total_bytes)}), "
@@ -4287,36 +4334,27 @@ def deploy(ctx: _Ctx, deployer, args: argparse.Namespace, verbose: bool = False)
               "'execute' to complete the remaining rebalancing.")
         return False
 
-    for db_uid, g in groups.items():
-        print(f"\n=== db:{db_uid} ({g['name']}): {len(g['ops'])} data op(s) then "
-              f"{len(g['eps'])} endpoint re-bind(s) ===")
-        for op in g["ops"]:  # shard migrations + failovers, in plan order
-            print(f"  {deployer.describe(op)}   # {op['label']}")
-            ok, msg = deployer.run(op)
-            if not ok:
-                print(f"    FAILED: {msg}")
-                print(f"\nStopped on db:{db_uid} after {data_done} data op(s) and "
-                      f"{ep_done} endpoint re-bind(s) overall. Re-run 'plan' to inspect.")
-                return 1
-            print(f"    OK{(' - ' + msg) if msg else ''}")
-            data_done += 1
-            if not gate(f"{op['kind']} on db:{db_uid}", shard_wait):
-                return 1
-        for op in g["eps"]:
-            print(f"  {deployer.describe(op)}   # {op['label']}")
-            ok, msg = deployer.run(op)
-            if not ok:
-                print(f"    FAILED: {msg}")
-                print(f"\nStopped on db:{db_uid} endpoint re-bind after {data_done} data "
-                      f"op(s) and {ep_done} endpoint re-bind(s) overall. Re-run 'plan'.")
-                return 1
-            print(f"    OK{(' - ' + msg) if msg else ''}")
+    # Execute in the single capacity-safe order (data ops interleave across DBs as the
+    # plan validated them; each DB's endpoint re-bind follows its last data op).
+    for op in ordered:
+        is_ep = op["kind"] in ("ep_node", "ep_policy")
+        print(f"  {deployer.describe(op)}   # {op['label']}")
+        ok, msg = deployer.run(op)
+        if not ok:
+            print(f"    FAILED: {msg}")
+            print(f"\nStopped after {data_done} data op(s) and {ep_done} endpoint "
+                  f"re-bind(s). Remaining operations were NOT applied. Re-run 'plan'.")
+            return 1
+        print(f"    OK{(' - ' + msg) if msg else ''}")
+        if is_ep:
             ep_done += 1
-            if not gate(f"endpoint re-bind for db:{db_uid}", ep_wait):
-                return 1
+        else:
+            data_done += 1
+        if not gate(f"{op['kind']} on db:{op['db']}", ep_wait if is_ep else shard_wait):
+            return 1
 
     print(f"\nDeploy complete: {data_done} data op(s) (migrations + failovers), {ep_done} "
-          f"endpoint re-bind(s) via {deployer.label} (grouped per database).")
+          f"endpoint re-bind(s) via {deployer.label} (capacity-safe plan order).")
     if unsupported:
         print(f"\n{len(unsupported)} op(s) were SKIPPED ({deployer.label} can't do them). "
               "Run these via rladmin to finish:")
