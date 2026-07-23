@@ -129,7 +129,7 @@
       }
     ],
     "rack_aware": false,
-    "ram_source": "rladmin status (PROVISIONAL_RAM); shard memory = USED_MEMORY (no configured limit in status output)",
+    "ram_source": "rladmin status extra all (PROVISIONAL_RAM; per-DB MEMORY_SIZE)",
     "score": {
       "cpu_cv": 0.0,
       "cpu_score": 100.0,

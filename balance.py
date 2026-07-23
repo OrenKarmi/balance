@@ -914,8 +914,7 @@ def discover_from_status_file(path: str) -> Cluster:
     secs = split_status_sections(text)
     # A complete `rladmin status extra all` capture includes all of these sections.
     # A partial or hand-trimmed file silently produces wrong plans (or crashes), so
-    # reject it up front rather than degrade. (A missing per-DB MEMORY_SIZE inside the
-    # DATABASES section is a separate concern - it falls back to current usage.)
+    # reject it up front rather than degrade.
     required = (("CLUSTER NODES", "NODES"), ("DATABASES", "DATABASES"),
                 ("ENDPOINTS", "ENDPOINTS"), ("SHARDS", "SHARDS"))
     missing = [label for label, kw in required if not _has_section(secs, kw)]
@@ -925,10 +924,12 @@ def discover_from_status_file(path: str) -> Cluster:
             "complete capture with: rladmin status extra all > " + os.path.basename(path))
     cluster = Cluster(
         name="redis-enterprise-cluster",
-        ram_source="rladmin status (PROVISIONAL_RAM); shard memory = USED_MEMORY "
-                   "(no configured limit in status output)",
+        ram_source="rladmin status extra all (PROVISIONAL_RAM; per-DB MEMORY_SIZE)",
     )
     cluster.config = Config()  # default; overridden by --config in run()
+    # Per-field completeness: collect every missing datum the planner needs, then
+    # reject (below) instead of silently guessing. No fallbacks on partial data.
+    problems: List[str] = []
 
     nodes_body = _find_section(secs, "NODES")
     for row in parse_status_table(nodes_body, "NODE:ID"):
@@ -940,6 +941,15 @@ def discover_from_status_file(path: str) -> Cluster:
             node.rack_id = rk
             cluster.rack_aware = True
         cluster.nodes.append(node)
+        if node.hostable:   # a hostable node must carry all placement inputs
+            if node.total_memory <= 0:
+                problems.append(f"node:{node.uid} missing total RAM (FREE_RAM)")
+            if node.cores <= 0:
+                problems.append(f"node:{node.uid} missing CORES")
+            if node.provisional_ram is None:
+                problems.append(f"node:{node.uid} missing PROVISIONAL_RAM")
+            if node.max_shards is None:
+                problems.append(f"node:{node.uid} missing shard limit (SHARDS 'used/max')")
 
     # Shards: also gather per-DB master counts, master nodes, and used memory.
     masters_per_db: Dict[int, int] = defaultdict(int)
@@ -975,33 +985,51 @@ def discover_from_status_file(path: str) -> Cluster:
         if shards_count <= 0:  # fall back to the SHARDS column "used/total"
             first, _ = _ratio_parts(row.get("SHARDS", ""))
             shards_count = int(first) if first.isdigit() else 0
-        # Configured memory limit if present, else ACTUAL used memory of masters.
         mem_col = parse_mem_token(row.get("MEMORY") or row.get("MEMORY_SIZE")
                                   or row.get("MEMORY_LIMIT") or "")
-        memory_size = mem_col if mem_col else master_used_per_db.get(db_id, 0)
-        proxy_policy = ((row.get("PROXY_POLICY") or "").strip().lower()
-                        or ep_policy_per_db.get(db_id)
-                        or _infer_proxy_policy(ep_nodes_per_db.get(db_id, set()),
-                                               master_nodes_per_db.get(db_id, set()), n_nodes))
         flex_col = row.get("BIGSTORE") or row.get("FLASH") or row.get("AUTO_TIERING") or ""
+        is_flex = _coerce_bool(flex_col)
+        db_type = (row.get("TYPE", "redis") or "redis").lower()
+        in_scope = (not is_flex) and db_type == "redis"
+        # Policy comes from a PROXY_POLICY column (rare) or the ENDPOINTS ROLE.
+        policy_src = (row.get("PROXY_POLICY") or "").strip().lower() or ep_policy_per_db.get(db_id)
+        # In-scope DBs must carry a configured limit, a determinable policy, endpoints
+        # and shards - no silent guessing. Out-of-scope flex/non-redis DBs are neither
+        # sized nor placed by the tool, so they are not required to.
+        if in_scope:
+            if not mem_col:
+                problems.append(f"db:{db_id} missing MEMORY_SIZE (configured memory limit)")
+            if not policy_src:
+                problems.append(f"db:{db_id} proxy policy not determinable "
+                                "(no PROXY_POLICY column / endpoint ROLE)")
+            if db_id not in ep_nodes_per_db:
+                problems.append(f"db:{db_id} has no ENDPOINTS rows")
+            if shards_count <= 0:
+                problems.append(f"db:{db_id} has no shards")
         cluster.databases.append(Database(
             uid=db_id,
             name=row.get("NAME", f"bdb:{db_id}") or f"bdb:{db_id}",
-            memory_size=memory_size,
+            memory_size=mem_col or master_used_per_db.get(db_id, 0),
             shards_count=shards_count,
             replication=_coerce_bool(row.get("REPLICATION")),
             sharding=shards_count > 1,
             shard_placement=(row.get("PLACEMENT", "dense") or "dense").lower(),
-            proxy_policy=proxy_policy,
-            db_type=(row.get("TYPE", "redis") or "redis").lower(),
-            is_flex=_coerce_bool(flex_col),
+            proxy_policy=policy_src or _infer_proxy_policy(
+                ep_nodes_per_db.get(db_id, set()),
+                master_nodes_per_db.get(db_id, set()), n_nodes),
+            db_type=db_type,
+            is_flex=is_flex,
         ))
 
     if cluster.databases and not cluster.shards:
+        problems.append(f"parsed {len(cluster.databases)} database(s) but no shards "
+                        "(incomplete SHARDS section)")
+    if problems:
         raise SystemExit(
-            f"{path}: parsed {len(cluster.databases)} database(s) but no shards "
-            "(incomplete SHARDS section). Generate a complete capture with: "
-            "rladmin status extra all > " + os.path.basename(path))
+            f"{path} is incomplete - refusing to plan on partial data:\n  - "
+            + "\n  - ".join(problems)
+            + "\nGenerate a complete capture with: rladmin status extra all > "
+            + os.path.basename(path))
     cluster.index()
     return cluster
 

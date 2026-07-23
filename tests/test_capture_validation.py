@@ -63,6 +63,18 @@ class TestCaptureValidation(unittest.TestCase):
         gutted = re.sub(r"(\nSHARDS:\n).*$", r"\1", self.full, flags=re.S)
         self._reject("empty SHARDS with databases", gutted)
 
+    # --- field-level completeness (columns present but a needed value is absent) ---
+    def test_missing_memory_size_column_rejected(self):
+        # Rename the MEMORY_SIZE header (same width) so no memory limit is found.
+        self._reject("no MEMORY_SIZE", self.full.replace("MEMORY_SIZE", "DATACFGSIZE"))
+
+    def test_missing_cores_column_rejected(self):
+        self._reject("no CORES", self.full.replace("CORES", "KORES"))
+
+    def test_missing_provisional_ram_column_rejected(self):
+        self._reject("no PROVISIONAL_RAM",
+                     self.full.replace("PROVISIONAL_RAM", "XROVISIONAL_RAM"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
