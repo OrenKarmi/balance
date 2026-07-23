@@ -867,6 +867,12 @@ def _find_section(sections: Dict[str, str], *keywords: str) -> str:
     return ""
 
 
+def _has_section(sections: Dict[str, str], *keywords: str) -> bool:
+    """True if a section whose header contains all keywords is present (even with an
+    empty body) - distinguishes an ABSENT section from a present-but-empty one."""
+    return any(all(k in name for k in keywords) for name in sections)
+
+
 _KNOWN_POLICIES = ("single", "all-master-shards", "all-master-proxies", "all-nodes")
 
 
@@ -906,6 +912,17 @@ def discover_from_status_file(path: str) -> Cluster:
         raise SystemExit(f"Cannot read status file {path}: {exc}")
 
     secs = split_status_sections(text)
+    # A complete `rladmin status extra all` capture includes all of these sections.
+    # A partial or hand-trimmed file silently produces wrong plans (or crashes), so
+    # reject it up front rather than degrade. (A missing per-DB MEMORY_SIZE inside the
+    # DATABASES section is a separate concern - it falls back to current usage.)
+    required = (("CLUSTER NODES", "NODES"), ("DATABASES", "DATABASES"),
+                ("ENDPOINTS", "ENDPOINTS"), ("SHARDS", "SHARDS"))
+    missing = [label for label, kw in required if not _has_section(secs, kw)]
+    if missing:
+        raise SystemExit(
+            f"{path} is missing required section(s): {', '.join(missing)}. Generate a "
+            "complete capture with: rladmin status extra all > " + os.path.basename(path))
     cluster = Cluster(
         name="redis-enterprise-cluster",
         ram_source="rladmin status (PROVISIONAL_RAM); shard memory = USED_MEMORY "
@@ -914,10 +931,6 @@ def discover_from_status_file(path: str) -> Cluster:
     cluster.config = Config()  # default; overridden by --config in run()
 
     nodes_body = _find_section(secs, "NODES")
-    if not nodes_body:
-        raise SystemExit(
-            f"{path} does not look like `rladmin status` output (no CLUSTER NODES section). "
-            "Generate it with: rladmin status extra all > " + os.path.basename(path))
     for row in parse_status_table(nodes_body, "NODE:ID"):
         node = _build_node(row)
         if node is None:
@@ -984,6 +997,11 @@ def discover_from_status_file(path: str) -> Cluster:
             is_flex=_coerce_bool(flex_col),
         ))
 
+    if cluster.databases and not cluster.shards:
+        raise SystemExit(
+            f"{path}: parsed {len(cluster.databases)} database(s) but no shards "
+            "(incomplete SHARDS section). Generate a complete capture with: "
+            "rladmin status extra all > " + os.path.basename(path))
     cluster.index()
     return cluster
 
