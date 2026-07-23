@@ -38,6 +38,17 @@ def _make_convergence_test(name, force):
     return test
 
 
+def _make_exec_order_test(name):
+    def test(self):
+        cluster, ctx = h.build_ctx(name, force=False)
+        rebinds = h.balance.endpoint_rebind_commands(
+            cluster, h.balance._Live(cluster, ctx.caps), ctx.planned_state)
+        ordered = h.balance._execution_order(ctx.steps, rebinds)
+        viol = h.balance.execution_order_violations(cluster, ctx.caps, ordered)
+        self.assertEqual(viol, [], f"{name}: emitted execution order over-commits: {viol}")
+    return test
+
+
 def _make_score_test(name):
     def test(self):
         _cluster, ctx = h.build_ctx(name, force=False)
@@ -59,6 +70,7 @@ for _name in h.fixtures():
         setattr(TestInvariants, f"test_convergence_{suffix}",
                 _make_convergence_test(_name, _force))
     setattr(TestInvariants, f"test_score_{_name}", _make_score_test(_name))
+    setattr(TestInvariants, f"test_exec_order_{_name}", _make_exec_order_test(_name))
 
 
 class TestOscillationRegression(unittest.TestCase):
