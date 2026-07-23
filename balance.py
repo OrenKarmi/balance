@@ -829,16 +829,15 @@ def discover(client: RladminClient) -> Cluster:
 # Discovery from a single `rladmin status [extra all]` capture file
 #
 # `rladmin status extra all > file` emits ALL sections in one file (CLUSTER
-# NODES / DATABASES / ENDPOINTS / SHARDS). It does NOT include the per-DB
-# configured memory LIMIT or proxy_policy (those come from `rladmin info db`),
-# so this mode derives:
-#   * shard memory  <- USED_MEMORY column (ACTUAL usage, not the limit)
-#   * endpoint nodes <- the real ENDPOINTS section (no proxy-policy guess)
-#   * proxy_policy   <- inferred from the endpoint vs master node sets
-#   * rack_id        <- node RACK_ID column if present
-# Configured memory limit / flex / proxy_policy are read from columns if the
-# capture happens to include them, else fall back as above. For exact limits,
-# proxy_policy and rack ids, use the live rladmin or --rest input instead.
+# NODES / DATABASES / ENDPOINTS / SHARDS) and every field the planner needs:
+#   * per-DB configured memory LIMIT   <- DATABASES MEMORY_SIZE column
+#   * proxy_policy                     <- ENDPOINTS ROLE column
+#   * endpoint nodes                   <- ENDPOINTS section
+#   * per-node RAM/cores/shard-limit   <- CLUSTER NODES columns
+#   * rack_id                          <- node RACK_ID column (if rack-aware)
+# This mode REQUIRES a complete capture: any missing section or field is a hard
+# error (no guessing / no fallbacks / no --force override). For a partial or
+# older cluster whose capture lacks fields, use live rladmin or --rest instead.
 # --------------------------------------------------------------------------- #
 def split_status_sections(text: str) -> Dict[str, str]:
     """Split combined `rladmin status` output into {SECTION HEADER: body}."""
@@ -893,16 +892,6 @@ def parse_endpoint_nodes(secs: Dict[str, str]) -> Tuple[Dict[int, set], Dict[int
     return dict(ep_nodes), ep_policy
 
 
-def _infer_proxy_policy(ep_nodes: set, master_nodes: set, n_nodes: int) -> str:
-    if len(ep_nodes) <= 1:
-        return "single"
-    if ep_nodes == master_nodes:
-        return "all-master-shards"
-    if len(ep_nodes) >= n_nodes:
-        return "all-nodes"
-    return "all-master-shards"
-
-
 def discover_from_status_file(path: str) -> Cluster:
     """Build the cluster inventory from a single `rladmin status [extra all]` file."""
     try:
@@ -951,10 +940,8 @@ def discover_from_status_file(path: str) -> Cluster:
             if node.max_shards is None:
                 problems.append(f"node:{node.uid} missing shard limit (SHARDS 'used/max')")
 
-    # Shards: also gather per-DB master counts, master nodes, and used memory.
+    # Shards: also gather per-DB master counts (the DB's shard_count).
     masters_per_db: Dict[int, int] = defaultdict(int)
-    master_nodes_per_db: Dict[int, set] = defaultdict(set)
-    master_used_per_db: Dict[int, int] = defaultdict(int)
     for row in parse_status_table(_find_section(secs, "SHARDS"), "DB:ID"):
         bdb_uid = _id_from(row.get("DB:ID", ""))
         node_uid = _id_from(row.get("NODE", ""))
@@ -962,29 +949,23 @@ def discover_from_status_file(path: str) -> Cluster:
         if bdb_uid is None or node_uid is None or shard_uid is None:
             continue
         role = (row.get("ROLE", "master") or "master").lower()
-        used = parse_mem_token(row.get("USED_MEMORY", "")) or 0
         cluster.shards.append(Shard(
             uid=shard_uid, role=role, bdb_uid=bdb_uid, node_uid=node_uid,
-            used_memory=used, slots=row.get("SLOTS", "") or "",
+            used_memory=parse_mem_token(row.get("USED_MEMORY", "")) or 0,
+            slots=row.get("SLOTS", "") or "",
         ))
         if role == "master":
             masters_per_db[bdb_uid] += 1
-            master_nodes_per_db[bdb_uid].add(node_uid)
-            master_used_per_db[bdb_uid] += used
 
-    # Endpoints: real per-DB endpoint -> node placement (and policy if present).
+    # Endpoints: real per-DB endpoint -> node placement (and policy from ROLE).
     ep_nodes_per_db, ep_policy_per_db = parse_endpoint_nodes(secs)
     cluster.endpoints_by_db = {uid: set(v) for uid, v in ep_nodes_per_db.items()}
 
-    n_nodes = len(cluster.nodes)
     for row in parse_status_table(_find_section(secs, "DATABASES"), "DB:ID"):
         db_id = _id_from(row.get("DB:ID", ""))
         if db_id is None:
             continue
         shards_count = masters_per_db.get(db_id, 0)
-        if shards_count <= 0:  # fall back to the SHARDS column "used/total"
-            first, _ = _ratio_parts(row.get("SHARDS", ""))
-            shards_count = int(first) if first.isdigit() else 0
         mem_col = parse_mem_token(row.get("MEMORY") or row.get("MEMORY_SIZE")
                                   or row.get("MEMORY_LIMIT") or "")
         flex_col = row.get("BIGSTORE") or row.get("FLASH") or row.get("AUTO_TIERING") or ""
@@ -994,8 +975,8 @@ def discover_from_status_file(path: str) -> Cluster:
         # Policy comes from a PROXY_POLICY column (rare) or the ENDPOINTS ROLE.
         policy_src = (row.get("PROXY_POLICY") or "").strip().lower() or ep_policy_per_db.get(db_id)
         # In-scope DBs must carry a configured limit, a determinable policy, endpoints
-        # and shards - no silent guessing. Out-of-scope flex/non-redis DBs are neither
-        # sized nor placed by the tool, so they are not required to.
+        # and shards - read straight from the capture, never guessed. Out-of-scope
+        # flex/non-redis DBs are neither sized nor placed by the tool.
         if in_scope:
             if not mem_col:
                 problems.append(f"db:{db_id} missing MEMORY_SIZE (configured memory limit)")
@@ -1009,14 +990,12 @@ def discover_from_status_file(path: str) -> Cluster:
         cluster.databases.append(Database(
             uid=db_id,
             name=row.get("NAME", f"bdb:{db_id}") or f"bdb:{db_id}",
-            memory_size=mem_col or master_used_per_db.get(db_id, 0),
+            memory_size=mem_col or 0,               # in-scope guaranteed present (else rejected)
             shards_count=shards_count,
             replication=_coerce_bool(row.get("REPLICATION")),
             sharding=shards_count > 1,
             shard_placement=(row.get("PLACEMENT", "dense") or "dense").lower(),
-            proxy_policy=policy_src or _infer_proxy_policy(
-                ep_nodes_per_db.get(db_id, set()),
-                master_nodes_per_db.get(db_id, set()), n_nodes),
+            proxy_policy=policy_src or "single",    # 'single' only reached for out-of-scope DBs
             db_type=db_type,
             is_flex=is_flex,
         ))
